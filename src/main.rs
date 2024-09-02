@@ -99,6 +99,11 @@ async fn main() {
             sleep(dur).await
         }
 
+        if message.channel.message_encoding == "edgefirst_msgs/msg/DmaBuffer" {
+            // Don't send DMA buffer messages because they won't be useful
+            continue;
+        }
+
         let value = Value::from(message.data.as_ref()).encoding(Encoding::WithSuffix(
             KnownEncoding::AppOctetStream,
             message.channel.message_encoding.clone().into(),
