@@ -30,3 +30,8 @@ env_logger = "0.11.2"
 nix = { version = "0.28.0", features = ["time"] }
 mcap = "0.9.2"
 memmap2 = "0.9.4"
+g2d-sys = {version = "1.0.0", path = "g2d-sys"}
+videostream = { git = "https://github.com/Charlie-AuZone/videostream-rs.git", branch="RVN-260" }
+dma-buf = "0.4.0"
+dma-heap = "0.4.0"
+turbojpeg = {version = "1.1.1", features = ["image"]}
