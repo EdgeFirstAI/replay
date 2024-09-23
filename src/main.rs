@@ -4,18 +4,16 @@ use cdr::{CdrLe, Infinite};
 use clap::Parser;
 use ctrlc;
 use edgefirst_schemas::{
-    builtin_interfaces::Time,
     edgefirst_msgs::DmaBuf,
     foxglove_msgs::FoxgloveCompressedVideo,
     sensor_msgs::CompressedImage,
-    std_msgs::{self, Header},
+    std_msgs::{Header},
 };
 use image::{Image, ImageManager};
 use log::{error, info, trace};
 use mcap::Message;
 use setup::Args;
 use std::{
-    error::Error,
     path::Path,
     process,
     str::FromStr,
@@ -25,7 +23,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use turbojpeg::image::RgbaImage;
 use video_decode::VideoDecoder;
 use zenoh::{
     config::Config,

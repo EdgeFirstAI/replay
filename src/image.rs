@@ -13,7 +13,7 @@ use std::{
     },
     ptr::null_mut,
 };
-use turbojpeg::{libc::dup, OwnedBuf};
+use turbojpeg::libc::dup;
 use videostream::{camera::CameraBuffer, encoder::VSLRect, fourcc::FourCC, frame::Frame};
 
 pub const RGB3: FourCC = FourCC(*b"RGB3");
