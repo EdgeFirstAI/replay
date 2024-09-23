@@ -7,10 +7,7 @@ use std::{
     os::raw::c_void,
 };
 use turbojpeg::image::RgbaImage;
-use videostream::{
-    decoder::{DecodeReturnCode, Decoder, DecoderInputCodec},
-    fourcc::FourCC,
-};
+use videostream::decoder::{DecodeReturnCode, Decoder, DecoderInputCodec};
 
 const BUF_COUNT: usize = 4;
 pub struct VideoDecoder<'a> {
@@ -71,7 +68,7 @@ impl<'a> VideoDecoder<'a> {
         let mut consumed = 0;
         self.last_data.extend_from_slice(data);
         // let mut image = None;
-        for _ in 0..3 {
+        for _ in 0..2 {
             let (ret, bytes, frame) = match self.decoder.decode_frame(&self.last_data[consumed..]) {
                 Ok(v) => v,
                 Err(e) => {
@@ -79,10 +76,10 @@ impl<'a> VideoDecoder<'a> {
                     return Err(e);
                 }
             };
-            println!(
+            trace!(
                 "Consumed a total of {} out of {}",
                 consumed + bytes,
-                total_len
+                data.len()
             );
             match ret {
                 DecodeReturnCode::Initialized => {
@@ -101,7 +98,7 @@ impl<'a> VideoDecoder<'a> {
                     &Some(self.decoder.crop().into()),
                 ) {
                     Ok(_) => {
-                        println!("Color space conversion success")
+                        trace!("Color space conversion success")
                     }
                     Err(e) => {
                         error!("Color space conversion failed: {:?}", e);

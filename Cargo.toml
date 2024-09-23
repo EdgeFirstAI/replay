@@ -35,3 +35,4 @@ videostream = { git = "https://github.com/Charlie-AuZone/videostream-rs.git", br
 dma-buf = "0.4.0"
 dma-heap = "0.4.0"
 turbojpeg = {version = "1.1.1", features = ["image"]}
+ctrlc = "3.4.5"

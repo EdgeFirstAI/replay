@@ -66,6 +66,7 @@ impl<'a> G2DBuffer<'a> {
 impl<'a> Drop for G2DBuffer<'a> {
     fn drop(&mut self) {
         self.imgmgr.free(self);
+        debug!("G2D Buffer freed")
     }
 }
 
@@ -100,6 +101,7 @@ impl ImageManager {
                 "g2d_alloc failed",
             )));
         }
+        debug!("G2D Buffer alloc'd");
         Ok(G2DBuffer {
             buf: g2d_buf,
             imgmgr: &self,
@@ -127,7 +129,6 @@ impl ImageManager {
             Some(v) => (v as i32).into(),
             None => unsafe { DmaBuf::from_raw_fd(from.handle()).into() },
         };
-        println!("to.fd = {}", to.fd.as_raw_fd());
         let to_fd = to.fd.try_clone()?;
         let to_phys: G2DPhysical = DmaBuf::from(to_fd).into();
         let fourcc = FourCC::from(from.fourcc());
@@ -286,6 +287,7 @@ pub struct Image {
 const fn format_row_stride(format: FourCC, width: i32) -> usize {
     match format {
         RGB3 => 3 * width as usize,
+        RGBX => 4 * width as usize,
         RGBA => 4 * width as usize,
         YUYV => 2 * width as usize,
         NV12 => width as usize / 2 + width as usize,
@@ -388,32 +390,3 @@ impl fmt::Display for Image {
         )
     }
 }
-
-pub fn encode_jpeg(pix: &[u8], img: Option<&Image>) -> Result<OwnedBuf, Box<dyn Error>> {
-    let img2 = match img {
-        Some(img) => turbojpeg::Image {
-            width: img.width as usize,
-            height: img.height as usize,
-            format: turbojpeg::PixelFormat::RGBA,
-            pixels: pix,
-            pitch: img.width as usize * 4,
-        },
-        None => {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "no image provided",
-            )));
-        }
-    };
-
-    let res = turbojpeg::compress(img2, 100, turbojpeg::Subsamp::Sub2x2);
-    match res {
-        Ok(buf) => Ok(buf),
-        Err(e) => Err(Box::new(e)),
-    }
-}
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-// }

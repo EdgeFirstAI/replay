@@ -2,6 +2,7 @@ use async_std::task::sleep;
 use cdr::{CdrLe, Infinite};
 // use serde::{Deserialize, Serialize};
 use clap::Parser;
+use ctrlc;
 use edgefirst_schemas::{
     builtin_interfaces::Time,
     edgefirst_msgs::DmaBuf,
@@ -18,7 +19,10 @@ use std::{
     path::Path,
     process,
     str::FromStr,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 use turbojpeg::image::RgbaImage;
@@ -55,7 +59,14 @@ async fn main() {
     }
     env_logger::init();
 
-    let mut config = Config::default();
+    let run = Arc::new(AtomicBool::new(true));
+    let run_clone = run.clone();
+    ctrlc::set_handler(move || {
+        if !run_clone.fetch_and(false, Ordering::Relaxed) {
+            process::exit(0);
+        }
+    })
+    .expect("Error setting Ctrl-C handler");
 
     let imgmgr = match ImageManager::new() {
         Ok(v) => v,
@@ -111,6 +122,7 @@ async fn main() {
         }
         return in_filter;
     });
+    let mut config = Config::default();
     let mode = WhatAmI::from_str(&args.mode).unwrap();
     config.set_mode(Some(mode)).unwrap();
     config.connect.endpoints = args.connect.iter().map(|v| v.parse().unwrap()).collect();
@@ -132,6 +144,9 @@ async fn main() {
     info!("Opened Zenoh session");
 
     for message in msg_stream {
+        if !run.load(Ordering::Relaxed) {
+            return;
+        }
         let message = match message {
             Ok(v) => v,
             Err(e) => {
@@ -265,7 +280,7 @@ fn stream_h264<'a>(
                 ));
 
             match session.put(&args.dma_topic, encoded).res_sync() {
-                Ok(_) => (info!("Sent dma message on {}", args.dma_topic)),
+                Ok(_) => trace!("Sent dma message on {}", args.dma_topic),
                 Err(e) => {
                     error!("Error sending message on {}: {:?}", args.dma_topic, e)
                 }
