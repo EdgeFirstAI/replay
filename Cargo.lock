@@ -1479,7 +1479,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "maivin-echo"
+name = "maivin-replay"
 version = "0.0.0"
 dependencies = [
  "async-std",

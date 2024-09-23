@@ -1,3 +1,3 @@
-# Maivin Echo
+# Maivin Replay
 
-The Maivin Echo program replays the messages stores in an MCAP file into the Zenoh messaging protocol
+The Maivin Replay program replays the messages stores in an MCAP file into the Zenoh messaging protocol

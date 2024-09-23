@@ -21,7 +21,7 @@ definitions:
         script:
           - |
             if [ -z "$BITBUCKET_TAG" ] ; then
-              export BRANCH=$(echo ${BITBUCKET_BRANCH} | sed 's,/,-,g')
+              export BRANCH=$(replay ${BITBUCKET_BRANCH} | sed 's,/,-,g')
               export VERSION=0.0.0-${BRANCH}-${BITBUCKET_BUILD_NUMBER}
             else
               export VERSION=${BITBUCKET_TAG}
@@ -37,7 +37,7 @@ definitions:
           - cargo outdated --depth 1 --format json > outdated.json || true
           - cargo sonar --issues clippy,audit,outdated
         artifacts:
-          - target/aarch64-unknown-linux-gnu/release/maivin-echo
+          - target/aarch64-unknown-linux-gnu/release/maivin-replay
           - sonar-issues.json
     - step: &sonar
         name: Code Sonar
@@ -67,7 +67,7 @@ pipelines:
           name: Deploy to Production
           deployment: Production
           script:
-            - cp target/aarch64-unknown-linux-gnu/release/maivin-echo maivin-echo-$BITBUCKET_TAG
+            - cp target/aarch64-unknown-linux-gnu/release/maivin-replay maivin-replay-$BITBUCKET_TAG
             - pipe: atlassian/bitbucket-upload-file:0.7.1
               variables:
                 BITBUCKET_USERNAME: au-zone-ci
@@ -78,6 +78,6 @@ pipelines:
                 AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
                 AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
                 AWS_DEFAULT_REGION: 'us-west-2'
-                S3_BUCKET: "maivin/services/echo"
+                S3_BUCKET: "maivin/services/replay"
                 LOCAL_PATH: "."
                 EXTRA_ARGS: "--exclude=* --include=maivin-*-$BITBUCKET_TAG"
