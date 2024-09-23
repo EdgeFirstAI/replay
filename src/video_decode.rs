@@ -68,7 +68,7 @@ impl<'a> VideoDecoder<'a> {
         let mut consumed = 0;
         self.last_data.extend_from_slice(data);
         // let mut image = None;
-        for _ in 0..2 {
+        for _ in 0..3 {
             let (ret, bytes, frame) = match self.decoder.decode_frame(&self.last_data[consumed..]) {
                 Ok(v) => v,
                 Err(e) => {
