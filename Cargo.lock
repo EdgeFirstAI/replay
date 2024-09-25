@@ -783,8 +783,9 @@ checksum = "0d6ef0072f8a535281e4876be788938b528e9a1d43900b82c2569af7da799125"
 
 [[package]]
 name = "edgefirst-schemas"
-version = "0.0.0"
-source = "git+https://github.com/MaivinAI/schemas.git?branch=masks#3d6a1506ddd1184e9cd26bb8b0ff76752228a9fc"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24e7f6df567e695065f998f5b9e44fe0b1804d10a10c22356883df32627957de"
 dependencies = [
  "serde",
  "serde_derive",
