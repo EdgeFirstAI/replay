@@ -37,16 +37,15 @@ pub struct Args {
     #[arg(long, default_value = "rt/camera/dma")]
     pub dma_topic: String,
 
-    /// list all topics.
+    /// list all topics
     #[arg(short, long)]
     pub list: bool,
 
-    /// echo out all topics.
-    #[arg(short, long)]
-    pub all_topics: bool,
+    /// topics to publish. If empty, will publish all topics
+    #[arg(short, long, env, value_delimiter = ' ')]
+    pub topics: Vec<String>,
 
-    /// when --all_topics is not enabled, this is the list of topics to echo
-    /// out. When --all_topics is enabled, filters out these topics instead
-    #[arg(env, required = false, value_delimiter = ' ')]
-    pub topic_filter: Vec<String>,
+    /// topics to ignore
+    #[arg(short, long, env, required = false, value_delimiter = ' ')]
+    pub ignore_topics: Vec<String>,
 }

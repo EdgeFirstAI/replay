@@ -4,16 +4,15 @@ use cdr::{CdrLe, Infinite};
 use clap::Parser;
 use ctrlc;
 use edgefirst_schemas::{
-    edgefirst_msgs::DmaBuf,
-    foxglove_msgs::FoxgloveCompressedVideo,
-    sensor_msgs::CompressedImage,
-    std_msgs::{Header},
+    edgefirst_msgs::DmaBuf, foxglove_msgs::FoxgloveCompressedVideo, sensor_msgs::CompressedImage,
+    std_msgs::Header,
 };
 use image::{Image, ImageManager};
 use log::{error, info, trace};
 use mcap::Message;
 use setup::Args;
 use std::{
+    collections::HashSet,
     path::Path,
     process,
     str::FromStr,
@@ -46,6 +45,14 @@ fn map_mcap<P: AsRef<Path>>(p: P) -> Result<Mmap, String> {
     }
 }
 
+fn strip_rt(topics: &mut Vec<String>) {
+    for i in 0..topics.len() {
+        if topics[i].starts_with("rt/") {
+            topics[i] = topics[i][2..].to_string();
+        }
+    }
+}
+
 const INIT_TIME_VAL: u64 = 0;
 
 #[async_std::main]
@@ -55,26 +62,6 @@ async fn main() {
         println!("replay_speed must be a positive number")
     }
     env_logger::init();
-
-    let run = Arc::new(AtomicBool::new(true));
-    let run_clone = run.clone();
-    ctrlc::set_handler(move || {
-        if !run_clone.fetch_and(false, Ordering::Relaxed) {
-            process::exit(0);
-        }
-    })
-    .expect("Error setting Ctrl-C handler");
-
-    let imgmgr = match ImageManager::new() {
-        Ok(v) => v,
-        Err(e) => {
-            error!("Could not open G2D: {:?}", e);
-            return;
-        }
-    };
-
-    let mut video_decoder = None;
-    let src_pid = process::id();
 
     let mapped = match map_mcap(&args.mcap) {
         Ok(v) => v,
@@ -92,15 +79,51 @@ async fn main() {
         }
     };
     info!("Parsed MCAP file {:?}", args.mcap);
+
+    if args.list {
+        let mut topics = HashSet::new();
+
+        let summary = mcap::Summary::read(&mapped);
+        if summary.is_ok() && summary.as_ref().unwrap().is_some() {
+            let summary = summary.unwrap().unwrap();
+            for c in summary.channels.values() {
+                let topic = c.topic.clone();
+                if topics.contains(&topic) {
+                    println!("{topic}");
+                }
+                topics.insert(topic);
+            }
+            return;
+        }
+
+        for message in msg_stream {
+            let message = match message {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Could not parse mcap message: {:?}", e);
+                    return;
+                }
+            };
+            let topic = message.channel.topic.clone();
+            if topics.contains(&topic) {
+                println!("{topic}");
+            }
+            topics.insert(topic);
+        }
+        return;
+    }
+
+    let src_pid = process::id();
+
     let mut has_h264 = false;
 
-    let mut first_msg_time = INIT_TIME_VAL;
-    let mut start = Instant::now();
+    let mut topics = args.topics.clone();
+    let mut ignore_topics = args.ignore_topics.clone();
+    strip_rt(&mut topics);
+    strip_rt(&mut ignore_topics);
 
-    let mut topics = args.topic_filter.clone();
-    let all_topics = args.all_topics;
     topics.sort();
-
+    ignore_topics.sort();
     let msg_stream = msg_stream.filter(|message| {
         let message = match message {
             Ok(v) => v,
@@ -109,15 +132,15 @@ async fn main() {
                 return false;
             }
         };
+        let to_publish = if topics.is_empty() {
+            true
+        } else {
+            topics.binary_search(&message.channel.topic).is_ok()
+        };
 
-        let in_filter = args
-            .topic_filter
-            .binary_search(&message.channel.topic)
-            .is_ok();
-        if all_topics {
-            return !in_filter;
-        }
-        return in_filter;
+        let to_ignore = ignore_topics.binary_search(&message.channel.topic).is_ok();
+
+        to_publish && !to_ignore
     });
     let mut config = Config::default();
     let mode = WhatAmI::from_str(&args.mode).unwrap();
@@ -139,6 +162,28 @@ async fn main() {
     }
     .into_arc();
     info!("Opened Zenoh session");
+
+    let mut first_msg_time = INIT_TIME_VAL;
+    let mut start = Instant::now();
+
+    let run = Arc::new(AtomicBool::new(true));
+    let run_clone = run.clone();
+    ctrlc::set_handler(move || {
+        if !run_clone.fetch_and(false, Ordering::Relaxed) {
+            process::exit(0);
+        }
+    })
+    .expect("Error setting Ctrl-C handler");
+
+    let imgmgr = match ImageManager::new() {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Could not open G2D: {:?}", e);
+            return;
+        }
+    };
+
+    let mut video_decoder = None;
 
     for message in msg_stream {
         if !run.load(Ordering::Relaxed) {
