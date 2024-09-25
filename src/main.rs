@@ -411,7 +411,9 @@ fn build_dma_msg_image(buf: &Image, header: Header, pid: u32, args: &Args) -> Dm
     };
     trace!(
         "dmabuf dma_buf: {} pid: {} length: {}",
-        dma_buf, pid, length,
+        dma_buf,
+        pid,
+        length,
     );
     msg
 }
