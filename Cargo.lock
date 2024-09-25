@@ -1419,7 +1419,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c2a198fb6b0eada2a8df47933734e6d35d350665a33a3593d7164fa52c75c19"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -3026,8 +3026,9 @@ checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
 
 [[package]]
 name = "videostream"
-version = "0.0.0"
-source = "git+https://github.com/Charlie-AuZone/videostream-rs.git?branch=RVN-260#db7759c35caebf1a6cfb11ac43ca1cf5d87447fd"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87188b86601bbb5fffc92947688c5fc99e7f293438ff1ea0c30fa297591e5de6"
 dependencies = [
  "dma-buf",
  "nix 0.28.0",
@@ -3037,8 +3038,9 @@ dependencies = [
 
 [[package]]
 name = "videostream-sys"
-version = "0.0.0"
-source = "git+https://github.com/Charlie-AuZone/videostream-rs.git?branch=RVN-260#db7759c35caebf1a6cfb11ac43ca1cf5d87447fd"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e87c6c33985f356caaee5d61c1046fa92dc82a4fd5e19a9f3aec92cab14cd5e4"
 dependencies = [
  "libc",
 ]
