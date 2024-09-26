@@ -45,12 +45,16 @@ fn map_mcap<P: AsRef<Path>>(p: P) -> Result<Mmap, String> {
     }
 }
 
-fn strip_rt(topics: &mut Vec<String>) {
-    for i in 0..topics.len() {
-        if topics[i].starts_with("rt/") {
-            topics[i] = topics[i][2..].to_string();
+// Sanitize the topics by removing preceding "rt" from any "rt/[...]" topics.
+// Removes empty string topics. Then sorts the topics
+fn sanitize_topics(topics: &mut Vec<String>) {
+    topics.retain_mut(|x| {
+        if x.starts_with("rt/") {
+            *x = x[2..].to_string();
         }
-    }
+        !x.is_empty()
+    });
+    topics.sort();
 }
 
 const INIT_TIME_VAL: u64 = 0;
@@ -119,11 +123,11 @@ async fn main() {
 
     let mut topics = args.topics.clone();
     let mut ignore_topics = args.ignore_topics.clone();
-    strip_rt(&mut topics);
-    strip_rt(&mut ignore_topics);
+    sanitize_topics(&mut topics);
+    sanitize_topics(&mut ignore_topics);
 
-    topics.sort();
-    ignore_topics.sort();
+    info!("Publishing topics: {:?}", topics);
+    info!("Ignoring topics: {:?}", ignore_topics);
     let msg_stream = msg_stream.filter(|message| {
         let message = match message {
             Ok(v) => v,
