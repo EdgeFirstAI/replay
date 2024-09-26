@@ -92,12 +92,16 @@ async fn main() {
             let summary = summary.unwrap().unwrap();
             for c in summary.channels.values() {
                 let topic = c.topic.clone();
-                if topics.contains(&topic) {
+                if !topics.contains(&topic) {
                     println!("{topic}");
                 }
                 topics.insert(topic);
             }
-            return;
+            // Didn't find topics in summary, proceed to find topics by looping
+            // through all the messages
+            if !topics.is_empty() {
+                return;
+            }
         }
 
         for message in msg_stream {
@@ -109,10 +113,13 @@ async fn main() {
                 }
             };
             let topic = message.channel.topic.clone();
-            if topics.contains(&topic) {
+            if !topics.contains(&topic) {
                 println!("{topic}");
             }
             topics.insert(topic);
+        }
+        if topics.is_empty() {
+            println!("Did not find any topics in MCAP");
         }
         return;
     }
