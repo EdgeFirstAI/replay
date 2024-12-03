@@ -1,0 +1,79 @@
+use log::{debug, warn};
+use serde_json::Value;
+use std::{collections::HashMap, process::Command};
+use tokio::task::JoinSet;
+pub struct ServiceHandler {
+    service_map: HashMap<String, String>,
+}
+const NO_ASSOCIATED_SERVICE: &str = "NONE";
+impl ServiceHandler {
+    pub fn new() -> Self {
+        let lookup: HashMap<String, Value> =
+            serde_json::from_str(include_str!("services.json")).unwrap();
+        let mut map = HashMap::new();
+        for (_, (key, val)) in lookup.iter().enumerate() {
+            if let Some(v) = val.as_str() {
+                map.insert(key.to_owned(), v.to_owned());
+            }
+        }
+        ServiceHandler { service_map: map }
+    }
+
+    pub fn stop_services(&self, topics: &[String]) -> JoinSet<()> {
+        let mut tasks = JoinSet::new();
+        for t in topics {
+            let service_name = self.topic_to_service(t);
+            println!("topic {} refers to service {}", t, service_name);
+            if service_name == NO_ASSOCIATED_SERVICE {
+                continue;
+            }
+            tasks.spawn(Self::stop_service(service_name));
+        }
+        tasks
+    }
+
+    fn topic_to_service(&self, topic: &str) -> String {
+        let topic = if topic.starts_with("rt/") {
+            &topic[3..]
+        } else if topic.starts_with("/") {
+            &topic[1..]
+        } else {
+            topic
+        };
+        let topic = topic.split("/").next().unwrap();
+        if self.service_map.contains_key(topic) {
+            self.service_map[topic].to_owned()
+        } else {
+            topic.to_owned()
+        }
+    }
+
+    async fn stop_service(service_name: String) {
+        println!("Stopping service {}", service_name);
+        let out = Command::new("systemctl")
+            .arg("stop")
+            .arg(&service_name)
+            .output();
+        match out {
+            Err(e) => warn!("Error when stopping service {}: {:?}", service_name, e),
+            Ok(v) => debug!("Output when stopping service {}: {:?}", service_name, v),
+        }
+        println!("Stopped service {}", service_name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ServiceHandler;
+
+    #[test]
+    fn test_service_to_topic() {
+        let s = ServiceHandler::new();
+        let service = s.topic_to_service("/camera/h264");
+        assert_eq!(
+            service, "camera",
+            "Topic was /camera/h264 and got service {}",
+            service
+        )
+    }
+}

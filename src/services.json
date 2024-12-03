@@ -1,0 +1,9 @@
+{
+    "camera" : "camera",
+    "radar" : "radar",
+    "model": "model",
+    "imu": "imu",
+    "gps": "navsat",
+    "fusion" : "fusion",
+    "tf_static" : "NONE"
+}

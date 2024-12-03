@@ -10,6 +10,7 @@ use edgefirst_schemas::{
 use image::{Image, ImageManager};
 use log::{error, info, trace};
 use mcap::Message;
+use services::ServiceHandler;
 use setup::Args;
 use std::{
     collections::HashSet,
@@ -28,6 +29,7 @@ use zenoh::{
     prelude::{r#async::*, sync::SyncResolve},
 };
 mod image;
+mod services;
 mod setup;
 mod video_decode;
 
@@ -45,6 +47,44 @@ fn map_mcap<P: AsRef<Path>>(p: P) -> Result<Mmap, String> {
     }
 }
 
+fn get_topics(mapped: &Mmap) -> HashSet<String> {
+    let mut topics = HashSet::new();
+
+    let summary = mcap::Summary::read(mapped);
+    if summary.is_ok() && summary.as_ref().unwrap().is_some() {
+        let summary = summary.unwrap().unwrap();
+        for c in summary.channels.values() {
+            let topic = c.topic.clone();
+            topics.insert(topic);
+        }
+
+        if !topics.is_empty() {
+            return topics;
+        }
+    }
+    // Didn't find topics in summary, proceed to find topics by looping
+    // through all the messages
+    let msg_stream = match mcap::MessageStream::new(mapped) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Could not parse mcap file: {:?}", e);
+            return topics;
+        }
+    };
+    for message in msg_stream {
+        let message = match message {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Could not parse mcap message: {:?}", e);
+                continue;
+            }
+        };
+        let topic = message.channel.topic.clone();
+        topics.insert(topic);
+    }
+    topics
+}
+
 // Sanitize the topics by removing preceding "rt" from any "rt/[...]" topics.
 // Removes empty string topics. Then sorts the topics
 fn sanitize_topics(topics: &mut Vec<String>) {
@@ -55,6 +95,18 @@ fn sanitize_topics(topics: &mut Vec<String>) {
         !x.is_empty()
     });
     topics.sort();
+}
+
+fn filter_topic(include_topics: &[String], ignore_topics: &[String], topic: &String) -> bool {
+    let to_publish = if include_topics.is_empty() {
+        true
+    } else {
+        include_topics.binary_search(topic).is_ok()
+    };
+
+    let to_ignore = ignore_topics.binary_search(topic).is_ok();
+
+    to_publish && !to_ignore
 }
 
 const INIT_TIME_VAL: u64 = 0;
@@ -75,6 +127,20 @@ async fn main() {
         }
     };
     info!("Opened MCAP file {:?}", args.mcap);
+
+    if args.list {
+        let topics = get_topics(&mapped);
+
+        if topics.is_empty() {
+            println!("Did not find any topics in MCAP");
+            return;
+        }
+        for t in topics {
+            println!("{}", t);
+        }
+        return;
+    }
+
     let msg_stream = match mcap::MessageStream::new(&mapped) {
         Ok(v) => v,
         Err(e) => {
@@ -83,47 +149,6 @@ async fn main() {
         }
     };
     info!("Parsed MCAP file {:?}", args.mcap);
-
-    if args.list {
-        let mut topics = HashSet::new();
-
-        let summary = mcap::Summary::read(&mapped);
-        if summary.is_ok() && summary.as_ref().unwrap().is_some() {
-            let summary = summary.unwrap().unwrap();
-            for c in summary.channels.values() {
-                let topic = c.topic.clone();
-                if !topics.contains(&topic) {
-                    println!("{topic}");
-                }
-                topics.insert(topic);
-            }
-            // Didn't find topics in summary, proceed to find topics by looping
-            // through all the messages
-            if !topics.is_empty() {
-                return;
-            }
-        }
-
-        for message in msg_stream {
-            let message = match message {
-                Ok(v) => v,
-                Err(e) => {
-                    error!("Could not parse mcap message: {:?}", e);
-                    return;
-                }
-            };
-            let topic = message.channel.topic.clone();
-            if !topics.contains(&topic) {
-                println!("{topic}");
-            }
-            topics.insert(topic);
-        }
-        if topics.is_empty() {
-            println!("Did not find any topics in MCAP");
-        }
-        return;
-    }
-
     let src_pid = process::id();
 
     let mut has_h264 = false;
@@ -135,6 +160,17 @@ async fn main() {
 
     info!("Publishing topics: {:?}", topics);
     info!("Ignoring topics: {:?}", ignore_topics);
+
+    let topics_to_publish: Vec<_> = get_topics(&mapped)
+        .into_iter()
+        .filter(|t| filter_topic(&topics, &ignore_topics, t))
+        .collect();
+    info!(
+        "Found the following topics to publish: {:#?}",
+        topics_to_publish
+    );
+    let service_handler = ServiceHandler::new();
+    let services_stop = service_handler.stop_services(&topics_to_publish);
     let msg_stream = msg_stream.filter(|message| {
         let message = match message {
             Ok(v) => v,
@@ -143,15 +179,7 @@ async fn main() {
                 return false;
             }
         };
-        let to_publish = if topics.is_empty() {
-            true
-        } else {
-            topics.binary_search(&message.channel.topic).is_ok()
-        };
-
-        let to_ignore = ignore_topics.binary_search(&message.channel.topic).is_ok();
-
-        to_publish && !to_ignore
+        filter_topic(&topics, &ignore_topics, &message.channel.topic)
     });
     let mut config = Config::default();
     let mode = WhatAmI::from_str(&args.mode).unwrap();
@@ -193,6 +221,7 @@ async fn main() {
             return;
         }
     };
+    let _ = services_stop.join_all();
 
     let mut video_decoder = None;
 
