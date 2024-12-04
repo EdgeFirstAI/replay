@@ -115,7 +115,7 @@ const INIT_TIME_VAL: u64 = 0;
 async fn main() {
     let args = Args::parse();
     if args.replay_speed <= 0.0 {
-        println!("replay_speed must be a positive number")
+        error!("replay_speed must be a positive number")
     }
     env_logger::init();
 

@@ -1,6 +1,9 @@
-use log::{debug, warn};
+use log::{debug, info, warn};
 use serde_json::Value;
-use std::{collections::HashMap, process::Command};
+use std::{
+    collections::{HashMap, HashSet},
+    process::Command,
+};
 use tokio::task::JoinSet;
 pub struct ServiceHandler {
     service_map: HashMap<String, String>,
@@ -20,13 +23,17 @@ impl ServiceHandler {
     }
 
     pub fn stop_services(&self, topics: &[String]) -> JoinSet<()> {
-        let mut tasks = JoinSet::new();
+        let mut services = HashSet::new();
         for t in topics {
             let service_name = self.topic_to_service(t);
-            println!("topic {} refers to service {}", t, service_name);
+            debug!("topic {} refers to service {}", t, service_name);
             if service_name == NO_ASSOCIATED_SERVICE {
                 continue;
             }
+            services.insert(service_name);
+        }
+        let mut tasks = JoinSet::new();
+        for service_name in services {
             tasks.spawn(Self::stop_service(service_name));
         }
         tasks
@@ -49,16 +56,19 @@ impl ServiceHandler {
     }
 
     async fn stop_service(service_name: String) {
-        println!("Stopping service {}", service_name);
+        debug!("Stopping service {}", service_name);
         let out = Command::new("systemctl")
             .arg("stop")
             .arg(&service_name)
             .output();
         match out {
             Err(e) => warn!("Error when stopping service {}: {:?}", service_name, e),
+            Ok(v) if v.stderr.len() > 0 => {
+                warn!("Output when stopping service {}: {:?}", service_name, v)
+            }
             Ok(v) => debug!("Output when stopping service {}: {:?}", service_name, v),
         }
-        println!("Stopped service {}", service_name);
+        info!("Stopped service {}", service_name);
     }
 }
 
