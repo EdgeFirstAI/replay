@@ -14,7 +14,7 @@ impl ServiceHandler {
         let lookup: HashMap<String, Value> =
             serde_json::from_str(include_str!("services.json")).unwrap();
         let mut map = HashMap::new();
-        for (_, (key, val)) in lookup.iter().enumerate() {
+        for (key, val) in lookup.iter() {
             if let Some(v) = val.as_str() {
                 map.insert(key.to_owned(), v.to_owned());
             }
@@ -40,13 +40,14 @@ impl ServiceHandler {
     }
 
     fn topic_to_service(&self, topic: &str) -> String {
-        let topic = if topic.starts_with("rt/") {
-            &topic[3..]
-        } else if topic.starts_with("/") {
-            &topic[1..]
+        let topic = if let Some(t) = topic.strip_prefix("rt/") {
+            t
+        } else if let Some(t) = topic.strip_prefix("/") {
+            t
         } else {
             topic
         };
+
         let topic = topic.split("/").next().unwrap();
         if self.service_map.contains_key(topic) {
             self.service_map[topic].to_owned()
@@ -63,7 +64,7 @@ impl ServiceHandler {
             .output();
         match out {
             Err(e) => warn!("Error when stopping service {}: {:?}", service_name, e),
-            Ok(v) if v.stderr.len() > 0 => {
+            Ok(v) if !v.stderr.is_empty() => {
                 warn!("Output when stopping service {}: {:?}", service_name, v)
             }
             Ok(v) => debug!("Output when stopping service {}: {:?}", service_name, v),

@@ -104,7 +104,7 @@ impl ImageManager {
         debug!("G2D Buffer alloc'd");
         Ok(G2DBuffer {
             buf: g2d_buf,
-            imgmgr: &self,
+            imgmgr: self,
         })
     }
 

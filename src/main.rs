@@ -2,7 +2,6 @@ use async_std::task::sleep;
 use cdr::{CdrLe, Infinite};
 // use serde::{Deserialize, Serialize};
 use clap::Parser;
-use ctrlc;
 use edgefirst_schemas::{
     edgefirst_msgs::DmaBuf, foxglove_msgs::FoxgloveCompressedVideo, sensor_msgs::CompressedImage,
     std_msgs::Header,
@@ -43,7 +42,7 @@ fn map_mcap<P: AsRef<Path>>(p: P) -> Result<Mmap, String> {
     };
     match unsafe { Mmap::map(&fd) } {
         Ok(v) => Ok(v),
-        Err(e) => return Err(format!("Couldn't map MCAP file: {e}")),
+        Err(e) => Err(format!("Couldn't map MCAP file: {e}")),
     }
 }
 
@@ -221,7 +220,7 @@ async fn main() {
             return;
         }
     };
-    let _ = services_stop.join_all();
+    let _ = services_stop.join_all().await;
 
     let mut video_decoder = None;
 
@@ -334,7 +333,7 @@ fn stream_h264<'a>(
     }
     let video_decoder = video_decoder.as_mut().unwrap();
     // let count = video_decoder.frame_count;
-    let frame = match video_decoder.decode_h264_msg(&video.data, &imgmgr) {
+    let frame = match video_decoder.decode_h264_msg(&video.data, imgmgr) {
         Ok(v) => v,
         Err(e) => {
             error!("Could not decode video message: {:?}", e);
@@ -342,33 +341,30 @@ fn stream_h264<'a>(
         }
     };
 
-    match frame {
-        Some(f) => {
-            // use std::{fs::File, io::Write};
-            // let _ = f.dmabuf().memory_map().unwrap().read(
-            //     move |b, _: Option<i32>| {
-            //         let mut file = File::create(format!("./frame{}.rgba", count))
-            //             .expect("Unable to create file");
-            //         file.write(b)?;
-            //         Ok(())
-            //     },
-            //     Some(1),
-            // );
-            let dma_msg = build_dma_msg_image(f, video.header.clone(), src_pid, &args);
-            let encoded = Value::from(cdr::serialize::<_, _, CdrLe>(&dma_msg, Infinite).unwrap())
-                .encoding(Encoding::WithSuffix(
-                    KnownEncoding::AppOctetStream,
-                    "edgefirst_msgs/msg/DmaBuffer".into(),
-                ));
+    if let Some(f) = frame {
+        // use std::{fs::File, io::Write};
+        // let _ = f.dmabuf().memory_map().unwrap().read(
+        //     move |b, _: Option<i32>| {
+        //         let mut file = File::create(format!("./frame{}.rgba", count))
+        //             .expect("Unable to create file");
+        //         file.write(b)?;
+        //         Ok(())
+        //     },
+        //     Some(1),
+        // );
+        let dma_msg = build_dma_msg_image(f, video.header.clone(), src_pid, args);
+        let encoded = Value::from(cdr::serialize::<_, _, CdrLe>(&dma_msg, Infinite).unwrap())
+            .encoding(Encoding::WithSuffix(
+                KnownEncoding::AppOctetStream,
+                "edgefirst_msgs/msg/DmaBuffer".into(),
+            ));
 
-            match session.put(&args.dma_topic, encoded).res_sync() {
-                Ok(_) => trace!("Sent dma message on {}", args.dma_topic),
-                Err(e) => {
-                    error!("Error sending message on {}: {:?}", args.dma_topic, e)
-                }
+        match session.put(&args.dma_topic, encoded).res_sync() {
+            Ok(_) => trace!("Sent dma message on {}", args.dma_topic),
+            Err(e) => {
+                error!("Error sending message on {}: {:?}", args.dma_topic, e)
             }
         }
-        None => {}
     }
 }
 
@@ -402,30 +398,27 @@ fn stream_jpeg<'a>(
         };
     }
     let video_decoder = video_decoder.as_mut().unwrap();
-    let frame = match video_decoder.decode_jpeg_msg(&image.data, &imgmgr) {
+    let frame = match video_decoder.decode_jpeg_msg(&image.data, imgmgr) {
         Ok(v) => v,
         Err(e) => {
             error!("Could not decode video message: {:?}", e);
             return;
         }
     };
-    match frame {
-        Some(f) => {
-            let dma_msg = build_dma_msg_image(f, image.header.clone(), src_pid, &args);
-            let encoded = Value::from(cdr::serialize::<_, _, CdrLe>(&dma_msg, Infinite).unwrap())
-                .encoding(Encoding::WithSuffix(
-                    KnownEncoding::AppOctetStream,
-                    "edgefirst_msgs/msg/DmaBuffer".into(),
-                ));
+    if let Some(f) = frame {
+        let dma_msg = build_dma_msg_image(f, image.header.clone(), src_pid, args);
+        let encoded = Value::from(cdr::serialize::<_, _, CdrLe>(&dma_msg, Infinite).unwrap())
+            .encoding(Encoding::WithSuffix(
+                KnownEncoding::AppOctetStream,
+                "edgefirst_msgs/msg/DmaBuffer".into(),
+            ));
 
-            match session.put(&args.dma_topic, encoded).res_sync() {
-                Ok(_) => (),
-                Err(e) => {
-                    error!("Error sending message on {}: {:?}", args.dma_topic, e)
-                }
+        match session.put(&args.dma_topic, encoded).res_sync() {
+            Ok(_) => (),
+            Err(e) => {
+                error!("Error sending message on {}: {:?}", args.dma_topic, e)
             }
         }
-        None => {}
     }
 }
 

@@ -81,11 +81,8 @@ impl<'a> VideoDecoder<'a> {
                 consumed + bytes,
                 data.len()
             );
-            match ret {
-                DecodeReturnCode::Initialized => {
-                    self.allocate(imgmgr)?;
-                }
-                _ => {}
+            if ret == DecodeReturnCode::Initialized {
+                self.allocate(imgmgr)?;
             }
             if let Some(f) = frame {
                 let index = self.frame_count % BUF_COUNT;
@@ -180,6 +177,6 @@ impl<'a> VideoDecoder<'a> {
             );
             munmap(mmap_, self.frames[index].size());
         }
-        return Ok(Some(&self.frames[index]));
+        Ok(Some(&self.frames[index]))
     }
 }
