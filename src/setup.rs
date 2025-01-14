@@ -26,11 +26,11 @@ pub struct Args {
     pub mode: String,
 
     /// path to the mcap file
-    #[arg(required = true)]
+    #[arg(env, required = true)]
     pub mcap: PathBuf,
 
     /// replay speed
-    #[arg(short, long, default_value = "1.0")]
+    #[arg(short, long, env, default_value = "1.0")]
     pub replay_speed: f64,
 
     /// raw dma topic
