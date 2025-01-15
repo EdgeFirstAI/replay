@@ -52,7 +52,7 @@ pub struct Args {
 }
 
 fn parse_topics(topics: &str) -> Result<OwnedKeyExpr, &'static str> {
-    if topics.len() == 0 {
+    if topics.is_empty() {
         return Err("Topic cannot be empty string");
     }
     let mut topics = topics.to_owned();
