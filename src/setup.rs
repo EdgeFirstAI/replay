@@ -1,5 +1,6 @@
 use clap::Parser;
 use std::path::PathBuf;
+use zenoh::prelude::OwnedKeyExpr;
 
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq, Copy)]
 pub enum LabelSetting {
@@ -42,10 +43,24 @@ pub struct Args {
     pub list: bool,
 
     /// topics to publish. If empty, will publish all topics
-    #[arg(short, long, env, value_delimiter = ' ')]
-    pub topics: Vec<String>,
+    #[arg(short, long, env, value_delimiter = ' ', value_parser = parse_topics)]
+    pub topics: Vec<OwnedKeyExpr>,
 
     /// topics to ignore
-    #[arg(short, long, env, required = false, value_delimiter = ' ')]
-    pub ignore_topics: Vec<String>,
+    #[arg(short, long, env, required = false, value_delimiter = ' ', value_parser = parse_topics)]
+    pub ignore_topics: Vec<OwnedKeyExpr>,
+}
+
+fn parse_topics(topics: &str) -> Result<OwnedKeyExpr, &'static str> {
+    if topics.len() == 0 {
+        return Err("Topic cannot be empty string");
+    }
+    let mut topics = topics.to_owned();
+    if topics.starts_with("/") {
+        topics = "rt".to_owned() + &topics;
+    }
+    match OwnedKeyExpr::autocanonize(topics) {
+        Ok(v) => Ok(v),
+        Err(_) => Err("Could not parse topic"),
+    }
 }

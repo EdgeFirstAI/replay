@@ -22,7 +22,10 @@ impl ServiceHandler {
         ServiceHandler { service_map: map }
     }
 
-    pub fn stop_services(&self, topics: &[String]) -> JoinSet<()> {
+    pub fn stop_services<'a, I>(&self, topics: I) -> JoinSet<()>
+    where
+        I: IntoIterator<Item = &'a String>,
+    {
         let mut services = HashSet::new();
         for t in topics {
             let service_name = self.topic_to_service(t);

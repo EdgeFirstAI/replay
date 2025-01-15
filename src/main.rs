@@ -84,28 +84,31 @@ fn get_topics(mapped: &Mmap) -> HashSet<String> {
     topics
 }
 
-// Sanitize the topics by removing preceding "rt" from any "rt/[...]" topics.
-// Removes empty string topics. Then sorts the topics
-fn sanitize_topics(topics: &mut Vec<String>) {
-    topics.retain_mut(|x| {
-        if x.starts_with("rt/") {
-            *x = x[2..].to_string();
+fn filter_topic(
+    include_topics: &[OwnedKeyExpr],
+    ignore_topics: &[OwnedKeyExpr],
+    topic: &str,
+) -> bool {
+    let topic = "rt".to_owned() + topic;
+    let topic =
+        KeyExpr::autocanonize(topic).expect("mcap topic cannot be converted to valid zenoh topic");
+    let mut to_publish = include_topics.is_empty();
+
+    for t in include_topics {
+        if t.includes(&topic) {
+            to_publish = true;
+            break;
         }
-        !x.is_empty()
-    });
-    topics.sort();
-}
+    }
 
-fn filter_topic(include_topics: &[String], ignore_topics: &[String], topic: &String) -> bool {
-    let to_publish = if include_topics.is_empty() {
-        true
-    } else {
-        include_topics.binary_search(topic).is_ok()
-    };
+    for t in ignore_topics {
+        if t.includes(&topic) {
+            to_publish = false;
+            break;
+        }
+    }
 
-    let to_ignore = ignore_topics.binary_search(topic).is_ok();
-
-    to_publish && !to_ignore
+    to_publish
 }
 
 const INIT_TIME_VAL: u64 = 0;
@@ -152,15 +155,15 @@ async fn main() {
 
     let mut has_h264 = false;
 
-    let mut topics = args.topics.clone();
-    let mut ignore_topics = args.ignore_topics.clone();
-    sanitize_topics(&mut topics);
-    sanitize_topics(&mut ignore_topics);
+    // TODO: When we move to zenoh 1.0, update to use KeBoxTree instead of
+    // Vec<KeyExpr>
+    let topics = args.topics.clone();
+    let ignore_topics = args.ignore_topics.clone();
 
     info!("Publishing topics: {:?}", topics);
     info!("Ignoring topics: {:?}", ignore_topics);
 
-    let topics_to_publish: Vec<_> = get_topics(&mapped)
+    let topics_to_publish: HashSet<_> = get_topics(&mapped)
         .into_iter()
         .filter(|t| filter_topic(&topics, &ignore_topics, t))
         .collect();
@@ -178,7 +181,7 @@ async fn main() {
                 return false;
             }
         };
-        filter_topic(&topics, &ignore_topics, &message.channel.topic)
+        topics_to_publish.contains(&message.channel.topic)
     });
     let mut config = Config::default();
     let mode = WhatAmI::from_str(&args.mode).unwrap();
