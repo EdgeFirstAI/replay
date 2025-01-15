@@ -1,6 +1,6 @@
 {
     "camera" : "camera",
-    "radar" : "radar",
+    "radar" : "radarpub",
     "model": "model",
     "imu": "imu",
     "gps": "navsat",
