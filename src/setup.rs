@@ -44,23 +44,25 @@ pub struct Args {
 
     /// topics to publish. If empty, will publish all topics
     #[arg(short, long, env, value_delimiter = ' ', value_parser = parse_topics)]
-    pub topics: Vec<OwnedKeyExpr>,
+    pub topics: Vec<Option<OwnedKeyExpr>>,
 
     /// topics to ignore
     #[arg(short, long, env, required = false, value_delimiter = ' ', value_parser = parse_topics)]
-    pub ignore_topics: Vec<OwnedKeyExpr>,
+    pub ignore_topics: Vec<Option<OwnedKeyExpr>>,
 }
 
-fn parse_topics(topics: &str) -> Result<OwnedKeyExpr, &'static str> {
+// Parse into Ok(None) when the topic string is empty. This covers the edge case
+// of TOPICS="". Later this will be filtered out with `remove_none`
+fn parse_topics(topics: &str) -> Result<Option<OwnedKeyExpr>, String> {
     if topics.is_empty() {
-        return Err("Topic cannot be empty string");
+        return Ok(None);
     }
-    let mut topics = topics.to_owned();
-    if topics.starts_with("/") {
-        topics = "rt".to_owned() + &topics;
+    let mut _topics = topics.to_owned();
+    if _topics.starts_with("/") {
+        _topics = "rt".to_owned() + &_topics;
     }
-    match OwnedKeyExpr::autocanonize(topics) {
-        Ok(v) => Ok(v),
-        Err(_) => Err("Could not parse topic"),
+    match OwnedKeyExpr::autocanonize(_topics) {
+        Ok(v) => Ok(Some(v)),
+        Err(_) => Err(format!("Could not parse topic: {topics}")),
     }
 }

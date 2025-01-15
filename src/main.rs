@@ -87,11 +87,12 @@ fn get_topics(mapped: &Mmap) -> HashSet<String> {
 fn filter_topic(
     include_topics: &[OwnedKeyExpr],
     ignore_topics: &[OwnedKeyExpr],
-    topic: &str,
+    mcap_topic: &str,
 ) -> bool {
-    let topic = "rt".to_owned() + topic;
-    let topic =
-        KeyExpr::autocanonize(topic).expect("mcap topic cannot be converted to valid zenoh topic");
+    let topic = "rt".to_owned() + mcap_topic;
+    let topic = KeyExpr::autocanonize(topic).expect(&format!(
+        "mcap topic {mcap_topic} cannot be converted to valid zenoh topic"
+    ));
     let mut to_publish = include_topics.is_empty();
 
     for t in include_topics {
@@ -109,6 +110,10 @@ fn filter_topic(
     }
 
     to_publish
+}
+
+pub fn remove_none(topics: Vec<Option<OwnedKeyExpr>>) -> Vec<OwnedKeyExpr> {
+    topics.into_iter().filter_map(|s| s).collect()
 }
 
 const INIT_TIME_VAL: u64 = 0;
@@ -157,8 +162,8 @@ async fn main() {
 
     // TODO: When we move to zenoh 1.0, update to use KeBoxTree instead of
     // Vec<KeyExpr>
-    let topics = args.topics.clone();
-    let ignore_topics = args.ignore_topics.clone();
+    let topics = remove_none(args.topics.clone());
+    let ignore_topics = remove_none(args.ignore_topics.clone());
 
     info!("Publishing topics: {:?}", topics);
     info!("Ignoring topics: {:?}", ignore_topics);
