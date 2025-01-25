@@ -1,9 +1,11 @@
 {
     "camera" : "camera",
     "radar" : "radarpub",
-    "model": "model",
     "imu": "imu",
     "gps": "navsat",
-    "fusion" : "fusion",
+    "lidar": "lidarpub",
+    "local_time": "local_time",
+    "fusion": "fusion",
+    "model": "model",
     "tf_static" : "NONE"
 }

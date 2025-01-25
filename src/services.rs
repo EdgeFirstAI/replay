@@ -55,7 +55,7 @@ impl ServiceHandler {
         if self.service_map.contains_key(topic) {
             self.service_map[topic].to_owned()
         } else {
-            topic.to_owned()
+            NO_ASSOCIATED_SERVICE.to_owned()
         }
     }
 
