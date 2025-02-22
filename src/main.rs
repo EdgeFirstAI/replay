@@ -90,7 +90,9 @@ fn filter_topic(
     mcap_topic: &str,
 ) -> bool {
     let topic = "rt".to_owned() + mcap_topic;
-    let topic = KeyExpr::autocanonize(topic).unwrap_or_else(|_| panic!("mcap topic {mcap_topic} cannot be converted to valid zenoh topic"));
+    let topic = KeyExpr::autocanonize(topic).unwrap_or_else(|_| {
+        panic!("mcap topic {mcap_topic} cannot be converted to valid zenoh topic")
+    });
     let mut to_publish = include_topics.is_empty();
 
     for t in include_topics {

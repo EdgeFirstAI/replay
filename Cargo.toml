@@ -17,23 +17,21 @@ strip = false
 debug = true
 
 [dependencies]
-async-std = {version = "1.12.0", features = ["attributes"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-toml = "0.8"
-zenoh = "0.10.0-rc"
-cdr = "0.2"
-clap = { version = "4.5", features = ["derive", "env"] }
-edgefirst-schemas = "1.2"
-log = { version = "0.4", features = ["release_max_level_debug"] }
-env_logger = "0.11"
-nix = { version = "0.29", features = ["time"] }
-mcap = "0.12"
-memmap2 = "0.9"
-g2d-sys = {version = "1.0.0", path = "g2d-sys"}
-videostream = "0.9.0"
+async-std = { version = "1.12.0", features = ["attributes"] }
+cdr = "0.2.4"
+clap = { version = "4.5.30", features = ["derive", "env"] }
+ctrlc = "3.4.5"
 dma-buf = "0.4.0"
 dma-heap = "0.4.0"
-turbojpeg = {version = "1.1.1", features = ["image"]}
-ctrlc = "3.4.5"
+edgefirst-schemas = "1.2.4"
+env_logger = "0.11.6"
+g2d-sys = { version = "1.0.0", path = "g2d-sys" }
+log = { version = "0.4.26", features = ["release_max_level_debug"] }
+mcap = "0.15.0"
+memmap2 = "0.9.5"
+nix = { version = "0.29.0", features = ["time"] }
+serde_json = "1.0.139"
 tokio = { version = "1.42", features = ["rt"] }
+turbojpeg = { version = "1.2.2", features = ["image"] }
+videostream = "0.9.1"
+zenoh = "0.10.0-rc"
