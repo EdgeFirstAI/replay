@@ -10,7 +10,7 @@ use image::{Image, ImageManager};
 use log::{error, info, trace};
 use mcap::Message;
 use services::ServiceHandler;
-use setup::Args;
+use args::Args;
 use std::{
     collections::HashSet,
     path::Path,
@@ -29,7 +29,7 @@ use zenoh::{
 };
 mod image;
 mod services;
-mod setup;
+mod args;
 mod video_decode;
 
 use memmap2::Mmap;
