@@ -1,6 +1,10 @@
-use async_std::task::sleep;
+mod args;
+mod image;
+mod services;
+mod video_decode;
+
+use args::Args;
 use cdr::{CdrLe, Infinite};
-// use serde::{Deserialize, Serialize};
 use clap::Parser;
 use edgefirst_schemas::{
     edgefirst_msgs::DmaBuf, foxglove_msgs::FoxgloveCompressedVideo, sensor_msgs::CompressedImage,
@@ -9,31 +13,29 @@ use edgefirst_schemas::{
 use image::{Image, ImageManager};
 use log::{error, info, trace};
 use mcap::Message;
+use memmap2::Mmap;
 use services::ServiceHandler;
-use args::Args;
 use std::{
     collections::HashSet,
+    fs,
     path::Path,
     process,
-    str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
     time::{Duration, Instant},
 };
+use tokio::time::sleep;
+use tracing::{info_span, instrument};
+use tracing_subscriber::{layer::SubscriberExt as _, Layer as _, Registry};
+use tracy_client::{frame_mark, secondary_frame_mark};
 use video_decode::VideoDecoder;
 use zenoh::{
-    config::Config,
-    prelude::{r#async::*, sync::SyncResolve},
+    bytes::{Encoding, ZBytes},
+    key_expr::{KeyExpr, OwnedKeyExpr},
+    Session, Wait,
 };
-mod image;
-mod services;
-mod args;
-mod video_decode;
-
-use memmap2::Mmap;
-use std::fs;
 
 fn map_mcap<P: AsRef<Path>>(p: P) -> Result<Mmap, String> {
     let fd = match fs::File::open(p.as_ref()) {
@@ -118,13 +120,32 @@ pub fn remove_none(topics: Vec<Option<OwnedKeyExpr>>) -> Vec<OwnedKeyExpr> {
 
 const INIT_TIME_VAL: u64 = 0;
 
-#[async_std::main]
+#[tokio::main]
 async fn main() {
     let args = Args::parse();
-    if args.replay_speed <= 0.0 {
-        error!("replay_speed must be a positive number")
-    }
-    env_logger::init();
+
+    args.tracy.then(tracy_client::Client::start);
+
+    let stdout_log = tracing_subscriber::fmt::layer()
+        .pretty()
+        .with_filter(args.rust_log);
+
+    let journald = match tracing_journald::layer() {
+        Ok(journald) => Some(journald.with_filter(args.rust_log)),
+        Err(_) => None,
+    };
+
+    let tracy = match args.tracy {
+        true => Some(tracing_tracy::TracyLayer::default().with_filter(args.rust_log)),
+        false => None,
+    };
+
+    let subscriber = Registry::default()
+        .with(stdout_log)
+        .with(journald)
+        .with(tracy);
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    tracing_log::LogTracer::init().unwrap();
 
     let mapped = match map_mcap(&args.mcap) {
         Ok(v) => v,
@@ -188,26 +209,8 @@ async fn main() {
         };
         topics_to_publish.contains(&message.channel.topic)
     });
-    let mut config = Config::default();
-    let mode = WhatAmI::from_str(&args.mode).unwrap();
-    config.set_mode(Some(mode)).unwrap();
-    config.connect.endpoints = args.connect.iter().map(|v| v.parse().unwrap()).collect();
-    config.listen.endpoints = args.listen.iter().map(|v| v.parse().unwrap()).collect();
-    let _ = config.scouting.multicast.set_enabled(Some(true));
-    let _ = config
-        .scouting
-        .multicast
-        .set_interface(Some("lo".to_string()));
-    let _ = config.scouting.gossip.set_enabled(Some(true));
-    let session = match zenoh::open(config.clone()).res_async().await {
-        Ok(v) => v,
-        Err(e) => {
-            error!("Error while opening Zenoh session: {:?}", e);
-            return;
-        }
-    }
-    .into_arc();
-    info!("Opened Zenoh session");
+
+    let session = zenoh::open(args.clone()).wait().unwrap();
 
     let mut first_msg_time = INIT_TIME_VAL;
     let mut start = Instant::now();
@@ -236,6 +239,7 @@ async fn main() {
         if !run.load(Ordering::Relaxed) {
             return;
         }
+
         let message = match message {
             Ok(v) => v,
             Err(e) => {
@@ -255,6 +259,7 @@ async fn main() {
             .unwrap_or_default();
             sleep(dur).await
         }
+
         let schema = match &message.channel.schema {
             Some(v) => v.name.clone(),
             None => "".to_string(),
@@ -274,7 +279,8 @@ async fn main() {
                 src_pid,
                 &args,
                 &session,
-            )
+            );
+            args.tracy.then(|| secondary_frame_mark!("h264"));
         }
 
         // we don't use jpeg for DMA buffer when h264 is present
@@ -286,30 +292,35 @@ async fn main() {
                 src_pid,
                 &args,
                 &session,
-            )
+            );
+            args.tracy.then(|| secondary_frame_mark!("jpeg"));
         }
 
-        let value = Value::from(message.data.as_ref());
-        let value = value.encoding(Encoding::WithSuffix(
-            KnownEncoding::AppOctetStream,
-            schema.clone().into(),
-        ));
-        match session
-            .put("rt".to_string() + &message.channel.topic, value)
-            .res_sync()
-        {
-            Ok(_) => (),
-            Err(e) => {
-                error!(
-                    "Error sending message on {}: {:?}",
-                    "rt".to_string() + &message.channel.topic,
-                    e
-                )
+        info_span!("publish").in_scope(|| {
+            let msg = ZBytes::from(message.data.as_ref());
+            let enc = Encoding::APPLICATION_CDR.with_schema(schema.clone());
+
+            match session
+                .put("rt".to_string() + &message.channel.topic, msg)
+                .encoding(enc)
+                .wait()
+            {
+                Ok(_) => (),
+                Err(e) => {
+                    error!(
+                        "Error sending message on {}: {:?}",
+                        "rt".to_string() + &message.channel.topic,
+                        e
+                    )
+                }
             }
-        }
+        });
+
+        args.tracy.then(frame_mark);
     }
 }
 
+#[instrument(skip_all)]
 fn stream_h264<'a>(
     message: &Message,
     video_decoder: &mut Option<VideoDecoder<'a>>,
@@ -361,13 +372,10 @@ fn stream_h264<'a>(
         //     Some(1),
         // );
         let dma_msg = build_dma_msg_image(f, video.header.clone(), src_pid, args);
-        let encoded = Value::from(cdr::serialize::<_, _, CdrLe>(&dma_msg, Infinite).unwrap())
-            .encoding(Encoding::WithSuffix(
-                KnownEncoding::AppOctetStream,
-                "edgefirst_msgs/msg/DmaBuffer".into(),
-            ));
+        let msg = ZBytes::from(cdr::serialize::<_, _, CdrLe>(&dma_msg, Infinite).unwrap());
+        let enc = Encoding::APPLICATION_CDR.with_schema("edgefirst_msgs/msg/DmaBuffer");
 
-        match session.put(&args.dma_topic, encoded).res_sync() {
+        match session.put(&args.dma_topic, msg).encoding(enc).wait() {
             Ok(_) => trace!("Sent dma message on {}", args.dma_topic),
             Err(e) => {
                 error!("Error sending message on {}: {:?}", args.dma_topic, e)
@@ -376,6 +384,7 @@ fn stream_h264<'a>(
     }
 }
 
+#[instrument(skip_all)]
 fn stream_jpeg<'a>(
     message: &Message,
     video_decoder: &mut Option<VideoDecoder<'a>>,
@@ -415,13 +424,10 @@ fn stream_jpeg<'a>(
     };
     if let Some(f) = frame {
         let dma_msg = build_dma_msg_image(f, image.header.clone(), src_pid, args);
-        let encoded = Value::from(cdr::serialize::<_, _, CdrLe>(&dma_msg, Infinite).unwrap())
-            .encoding(Encoding::WithSuffix(
-                KnownEncoding::AppOctetStream,
-                "edgefirst_msgs/msg/DmaBuffer".into(),
-            ));
+        let msg = ZBytes::from(cdr::serialize::<_, _, CdrLe>(&dma_msg, Infinite).unwrap());
+        let enc = Encoding::APPLICATION_CDR.with_schema("edgefirst_msgs/msg/DmaBuffer");
 
-        match session.put(&args.dma_topic, encoded).res_sync() {
+        match session.put(&args.dma_topic, msg).encoding(enc).wait() {
             Ok(_) => (),
             Err(e) => {
                 error!("Error sending message on {}: {:?}", args.dma_topic, e)
