@@ -207,8 +207,16 @@ async fn main() {
             "Found the following topics to publish: {:#?}",
             topics_to_publish
         );
+
         let service_handler = ServiceHandler::new();
-        let services_stop = service_handler.stop_services(&topics_to_publish);
+        if args.system {
+            info!("Stopping system services before replay");
+            let services_stop = service_handler.stop_services(&topics_to_publish);
+            let _ = services_stop.join_all().await;
+        } else {
+            info!("Keeping system services running");
+        }
+
         let msg_stream = msg_stream.filter(|message| {
             let message = match message {
                 Ok(v) => v,
@@ -232,7 +240,6 @@ async fn main() {
                 return;
             }
         };
-        let _ = services_stop.join_all().await;
 
         let mut video_decoder = None;
 
@@ -320,7 +327,7 @@ async fn main() {
             args.tracy.then(frame_mark);
         }
 
-        if !args.r#loop {
+        if args.one_shot {
             break;
         }
         info!("Replay finished, starting over...");

@@ -32,9 +32,13 @@ pub struct Args {
     #[arg(short, long)]
     pub list: bool,
 
-    /// Enable looping to keep replaying the mcap file
-    #[arg(long)]
-    pub r#loop: bool,
+    /// Replays the MCAP only once
+    #[arg(short, long)]
+    pub one_shot: bool,
+
+    /// Stop system services before replay
+    #[arg(short, long)]
+    pub system: bool,
 
     /// topics to publish. If empty, will publish all topics
     #[arg(short, long, env, value_delimiter = ' ', value_parser = parse_topics)]
