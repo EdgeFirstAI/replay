@@ -199,74 +199,74 @@ impl ImageManager {
         Ok(())
     }
 
-    pub fn convert(
-        &self,
-        from: &Image,
-        to: &Image,
-        crop: Option<Rect>,
-    ) -> Result<(), Box<dyn Error>> {
-        let from_fd = from.fd.try_clone()?;
-        let from_phys: G2DPhysical = DmaBuf::from(from_fd).into();
+    // pub fn convert(
+    //     &self,
+    //     from: &Image,
+    //     to: &Image,
+    //     crop: Option<Rect>,
+    // ) -> Result<(), Box<dyn Error>> {
+    //     let from_fd = from.fd.try_clone()?;
+    //     let from_phys: G2DPhysical = DmaBuf::from(from_fd).into();
 
-        let to_fd = to.fd.try_clone()?;
-        let to_phys: G2DPhysical = DmaBuf::from(to_fd).into();
+    //     let to_fd = to.fd.try_clone()?;
+    //     let to_phys: G2DPhysical = DmaBuf::from(to_fd).into();
 
-        let mut src = g2d_surface {
-            planes: [from_phys.into(), 0, 0],
-            format: G2DFormat::from(from.format).format(),
-            left: 0,
-            top: 0,
-            right: from.width,
-            bottom: from.height,
-            stride: from.width,
-            width: from.width,
-            height: from.height,
-            blendfunc: 0,
-            clrcolor: 0,
-            rot: 0,
-            global_alpha: 0,
-        };
+    //     let mut src = g2d_surface {
+    //         planes: [from_phys.into(), 0, 0],
+    //         format: G2DFormat::from(from.format).format(),
+    //         left: 0,
+    //         top: 0,
+    //         right: from.width,
+    //         bottom: from.height,
+    //         stride: from.width,
+    //         width: from.width,
+    //         height: from.height,
+    //         blendfunc: 0,
+    //         clrcolor: 0,
+    //         rot: 0,
+    //         global_alpha: 0,
+    //     };
 
-        if let Some(r) = crop {
-            src.left = r.x;
-            src.top = r.y;
-            src.right = r.x + r.width;
-            src.bottom = r.y + r.height;
-        }
+    //     if let Some(r) = crop {
+    //         src.left = r.x;
+    //         src.top = r.y;
+    //         src.right = r.x + r.width;
+    //         src.bottom = r.y + r.height;
+    //     }
 
-        let mut dst = g2d_surface {
-            planes: [to_phys.into(), 0, 0],
-            format: G2DFormat::from(to.format).format(),
-            left: 0,
-            top: 0,
-            right: to.width,
-            bottom: to.height,
-            stride: to.width,
-            width: to.width,
-            height: to.height,
-            blendfunc: 0,
-            clrcolor: 0,
-            rot: 0,
-            global_alpha: 0,
-        };
+    //     let mut dst = g2d_surface {
+    //         planes: [to_phys.into(), 0, 0],
+    //         format: G2DFormat::from(to.format).format(),
+    //         left: 0,
+    //         top: 0,
+    //         right: to.width,
+    //         bottom: to.height,
+    //         stride: to.width,
+    //         width: to.width,
+    //         height: to.height,
+    //         blendfunc: 0,
+    //         clrcolor: 0,
+    //         rot: 0,
+    //         global_alpha: 0,
+    //     };
 
-        if unsafe { self.lib.g2d_blit(self.handle, &mut src, &mut dst) } != 0 {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "g2d_blit failed",
-            )));
-        }
-        if unsafe { self.lib.g2d_finish(self.handle) } != 0 {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "g2d_finish failed",
-            )));
-        }
+    //     if unsafe { self.lib.g2d_blit(self.handle, &mut src, &mut dst) } != 0 {
+    //         return Err(Box::new(io::Error::new(
+    //             io::ErrorKind::InvalidInput,
+    //             "g2d_blit failed",
+    //         )));
+    //     }
+    //     if unsafe { self.lib.g2d_finish(self.handle) } != 0 {
+    //         return Err(Box::new(io::Error::new(
+    //             io::ErrorKind::InvalidInput,
+    //             "g2d_finish failed",
+    //         )));
+    //     }
 
-        // FIXME: A cache invalidation is required here, currently missing!
+    //     // FIXME: A cache invalidation is required here, currently missing!
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 }
 
 impl Drop for ImageManager {

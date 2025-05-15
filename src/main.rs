@@ -169,52 +169,6 @@ async fn main() {
         return;
     }
 
-    let msg_stream = match mcap::MessageStream::new(&mapped) {
-        Ok(v) => v,
-        Err(e) => {
-            error!("Could not parse mcap file: {:?}", e);
-            return;
-        }
-    };
-    info!("Parsed MCAP file {:?}", args.mcap);
-    let src_pid = process::id();
-
-    let mut has_h264 = false;
-
-    // TODO: When we move to zenoh 1.0, update to use KeBoxTree instead of
-    // Vec<KeyExpr>
-    let topics = remove_none(args.topics.clone());
-    let ignore_topics = remove_none(args.ignore_topics.clone());
-
-    info!("Publishing topics: {:?}", topics);
-    info!("Ignoring topics: {:?}", ignore_topics);
-
-    let topics_to_publish: HashSet<_> = get_topics(&mapped)
-        .into_iter()
-        .filter(|t| filter_topic(&topics, &ignore_topics, t))
-        .collect();
-    info!(
-        "Found the following topics to publish: {:#?}",
-        topics_to_publish
-    );
-    let service_handler = ServiceHandler::new();
-    let services_stop = service_handler.stop_services(&topics_to_publish);
-    let msg_stream = msg_stream.filter(|message| {
-        let message = match message {
-            Ok(v) => v,
-            Err(e) => {
-                error!("Could not parse mcap message: {:?}", e);
-                return false;
-            }
-        };
-        topics_to_publish.contains(&message.channel.topic)
-    });
-
-    let session = zenoh::open(args.clone()).wait().unwrap();
-
-    let mut first_msg_time = INIT_TIME_VAL;
-    let mut start = Instant::now();
-
     let run = Arc::new(AtomicBool::new(true));
     let run_clone = run.clone();
     ctrlc::set_handler(move || {
@@ -224,99 +178,159 @@ async fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    let imgmgr = match ImageManager::new() {
-        Ok(v) => v,
-        Err(e) => {
-            error!("Could not open G2D: {:?}", e);
-            return;
-        }
-    };
-    let _ = services_stop.join_all().await;
-
-    let mut video_decoder = None;
-
-    for message in msg_stream {
-        if !run.load(Ordering::Relaxed) {
-            return;
-        }
-
-        let message = match message {
+    loop {
+        let msg_stream = match mcap::MessageStream::new(&mapped) {
             Ok(v) => v,
             Err(e) => {
-                error!("Could not parse mcap message: {:?}", e);
-                continue;
+                error!("Could not parse mcap file: {:?}", e);
+                return;
             }
         };
+        info!("Parsed MCAP file {:?}", args.mcap);
+        let src_pid = process::id();
 
-        if first_msg_time == INIT_TIME_VAL {
-            start = Instant::now();
-            first_msg_time = message.log_time;
+        let mut has_h264 = false;
+
+        // TODO: When we move to zenoh 1.0, update to use KeBoxTree instead of
+        // Vec<KeyExpr>
+        let topics = remove_none(args.topics.clone());
+        let ignore_topics = remove_none(args.ignore_topics.clone());
+
+        info!("Publishing topics: {:?}", topics);
+        info!("Ignoring topics: {:?}", ignore_topics);
+
+        let topics_to_publish: HashSet<_> = get_topics(&mapped)
+            .into_iter()
+            .filter(|t| filter_topic(&topics, &ignore_topics, t))
+            .collect();
+        info!(
+            "Found the following topics to publish: {:#?}",
+            topics_to_publish
+        );
+
+        let service_handler = ServiceHandler::new();
+        if args.system {
+            info!("Stopping system services before replay");
+            let services_stop = service_handler.stop_services(&topics_to_publish);
+            let _ = services_stop.join_all().await;
         } else {
-            let dur = Duration::from_nanos(
-                ((message.log_time - first_msg_time) as f64 / args.replay_speed) as u64,
-            )
-            .checked_sub(start.elapsed())
-            .unwrap_or_default();
-            sleep(dur).await
+            info!("Keeping system services running");
         }
 
-        let schema = match &message.channel.schema {
-            Some(v) => v.name.clone(),
-            None => "".to_string(),
-        };
-
-        if schema == "edgefirst_msgs/msg/DmaBuffer" {
-            // Don't send DMA buffer messages because they won't be useful
-            continue;
-        }
-
-        if schema == "foxglove_msgs/msg/CompressedVideo" {
-            has_h264 = true;
-            stream_h264(
-                &message,
-                &mut video_decoder,
-                &imgmgr,
-                src_pid,
-                &args,
-                &session,
-            );
-            args.tracy.then(|| secondary_frame_mark!("h264"));
-        }
-
-        // we don't use jpeg for DMA buffer when h264 is present
-        if !has_h264 && schema == "sensor_msgs/msg/CompressedImage" {
-            stream_jpeg(
-                &message,
-                &mut video_decoder,
-                &imgmgr,
-                src_pid,
-                &args,
-                &session,
-            );
-            args.tracy.then(|| secondary_frame_mark!("jpeg"));
-        }
-
-        info_span!("publish").in_scope(|| {
-            let msg = ZBytes::from(message.data.as_ref());
-            let enc = Encoding::APPLICATION_CDR.with_schema(schema.clone());
-
-            match session
-                .put("rt".to_string() + &message.channel.topic, msg)
-                .encoding(enc)
-                .wait()
-            {
-                Ok(_) => (),
+        let msg_stream = msg_stream.filter(|message| {
+            let message = match message {
+                Ok(v) => v,
                 Err(e) => {
-                    error!(
-                        "Error sending message on {}: {:?}",
-                        "rt".to_string() + &message.channel.topic,
-                        e
-                    )
+                    error!("Could not parse mcap message: {:?}", e);
+                    return false;
                 }
-            }
+            };
+            topics_to_publish.contains(&message.channel.topic)
         });
 
-        args.tracy.then(frame_mark);
+        let session = zenoh::open(args.clone()).wait().unwrap();
+
+        let mut first_msg_time = INIT_TIME_VAL;
+        let mut start = Instant::now();
+
+        let imgmgr = match ImageManager::new() {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Could not open G2D: {:?}", e);
+                return;
+            }
+        };
+
+        let mut video_decoder = None;
+
+        for message in msg_stream {
+            if !run.load(Ordering::Relaxed) {
+                return;
+            }
+
+            let message = match message {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Could not parse mcap message: {:?}", e);
+                    continue;
+                }
+            };
+
+            if first_msg_time == INIT_TIME_VAL {
+                start = Instant::now();
+                first_msg_time = message.log_time;
+            } else {
+                let dur = Duration::from_nanos(
+                    ((message.log_time - first_msg_time) as f64 / args.replay_speed) as u64,
+                )
+                .checked_sub(start.elapsed())
+                .unwrap_or_default();
+                sleep(dur).await
+            }
+
+            let schema = match &message.channel.schema {
+                Some(v) => v.name.clone(),
+                None => "".to_string(),
+            };
+
+            if schema == "edgefirst_msgs/msg/DmaBuffer" {
+                // Don't send DMA buffer messages because they won't be useful
+                continue;
+            }
+
+            if schema == "foxglove_msgs/msg/CompressedVideo" {
+                has_h264 = true;
+                stream_h264(
+                    &message,
+                    &mut video_decoder,
+                    &imgmgr,
+                    src_pid,
+                    &args,
+                    &session,
+                );
+                args.tracy.then(|| secondary_frame_mark!("h264"));
+            }
+
+            // we don't use jpeg for DMA buffer when h264 is present
+            if !has_h264 && schema == "sensor_msgs/msg/CompressedImage" {
+                stream_jpeg(
+                    &message,
+                    &mut video_decoder,
+                    &imgmgr,
+                    src_pid,
+                    &args,
+                    &session,
+                );
+                args.tracy.then(|| secondary_frame_mark!("jpeg"));
+            }
+
+            info_span!("publish").in_scope(|| {
+                let msg = ZBytes::from(message.data.as_ref());
+                let enc = Encoding::APPLICATION_CDR.with_schema(schema.clone());
+
+                match session
+                    .put("rt".to_string() + &message.channel.topic, msg)
+                    .encoding(enc)
+                    .wait()
+                {
+                    Ok(_) => (),
+                    Err(e) => {
+                        error!(
+                            "Error sending message on {}: {:?}",
+                            "rt".to_string() + &message.channel.topic,
+                            e
+                        )
+                    }
+                }
+            });
+
+            args.tracy.then(frame_mark);
+        }
+
+        if args.one_shot {
+            break;
+        }
+        info!("Replay finished, starting over...");
     }
 }
 
