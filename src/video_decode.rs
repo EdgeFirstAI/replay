@@ -48,8 +48,8 @@ impl<'a> VideoDecoder<'a> {
             };
             self.frames.push(Image::new_preallocated(
                 imgmgr.g2d_buf_fd(&dest_img_g2d_buf),
-                crop.get_width(),
-                crop.get_height(),
+                crop.get_width() as u32,
+                crop.get_height() as u32,
                 RGBA,
             ));
             self.g2dbufs.push(dest_img_g2d_buf);
@@ -150,8 +150,8 @@ impl<'a> VideoDecoder<'a> {
                     };
                 self.frames.push(Image::new_preallocated(
                     imgmgr.g2d_buf_fd(&dest_img_g2d_buf),
-                    jpeg.width() as i32,
-                    jpeg.height() as i32,
+                    jpeg.width(),
+                    jpeg.height(),
                     RGBA,
                 ));
                 self.g2dbufs.push(dest_img_g2d_buf);

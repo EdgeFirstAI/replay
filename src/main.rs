@@ -456,8 +456,8 @@ fn build_dma_msg_image(buf: &Image, header: Header, pid: u32, args: &Args) -> Dm
     let _ = args;
 
     // let ts = buf.timestamp();
-    let width = buf.width() as u32;
-    let height = buf.height() as u32;
+    let width = buf.width();
+    let height = buf.height();
     let fourcc = buf.format().into();
     let dma_buf = buf.raw_fd();
     // let dma_buf = buf.original_fd;
