@@ -241,6 +241,8 @@ async fn main() {
             }
         };
 
+        info!("Opened G2D with version {}", imgmgr.version());
+
         let mut video_decoder = None;
 
         for message in msg_stream {
