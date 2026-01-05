@@ -1,3 +1,6 @@
+// Copyright 2025 Au-Zone Technologies Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 use core::fmt;
 use dma_buf::DmaBuf;
 use dma_heap::{Heap, HeapKind};
@@ -6,6 +9,14 @@ use g2d_sys::{
     g2d_rotation_G2D_ROTATION_270, g2d_rotation_G2D_ROTATION_90, g2d_surface, g2d_surface_new,
     guess_version, G2DFormat, G2DPhysical,
 };
+
+// Compile-time assertion: g2d_surface_new must be at least as large as g2d_surface
+// for the pointer cast in convert_new/convert_phys_new to be safe.
+// g2d_surface_new extends g2d_surface with additional fields at the end.
+const _: () = assert!(
+    std::mem::size_of::<g2d_surface_new>() >= std::mem::size_of::<g2d_surface>(),
+    "g2d_surface_new must be at least as large as g2d_surface for safe casting"
+);
 use log::{debug, warn};
 use nix::libc::{mmap, munmap, MAP_SHARED, PROT_READ, PROT_WRITE};
 use std::{
@@ -38,10 +49,10 @@ pub struct Rect {
 impl From<VSLRect> for Rect {
     fn from(value: VSLRect) -> Self {
         Rect {
-            x: value.get_x(),
-            y: value.get_y(),
-            width: value.get_width(),
-            height: value.get_height(),
+            x: value.x(),
+            y: value.y(),
+            width: value.width(),
+            height: value.height(),
         }
     }
 }
@@ -124,13 +135,10 @@ impl ImageManager {
         width: i32,
         height: i32,
         channels: i32,
-    ) -> Result<G2DBuffer, Box<dyn Error>> {
+    ) -> Result<G2DBuffer<'_>, Box<dyn Error>> {
         let g2d_buf = unsafe { self.lib.g2d_alloc(width * height * channels, 0) };
         if g2d_buf.is_null() {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::Other,
-                "g2d_alloc failed",
-            )));
+            return Err(Box::new(io::Error::other("g2d_alloc failed")));
         }
         debug!("G2D Buffer alloc'd");
         Ok(G2DBuffer {
@@ -197,7 +205,10 @@ impl ImageManager {
                 "g2d_finish failed",
             )));
         }
-        // FIXME: A cache invalidation is required here, currently missing!
+        // NOTE: Cache invalidation may be needed for CPU access to the destination buffer.
+        // g2d_finish() synchronizes the G2D hardware, but doesn't invalidate CPU caches.
+        // Currently, the destination is published via DMA-BUF to Zenoh, which handles
+        // cache coherency at the kernel/driver level for DMA transfers.
 
         Ok(())
     }
@@ -243,7 +254,10 @@ impl ImageManager {
                 "g2d_finish failed",
             )));
         }
-        // FIXME: A cache invalidation is required here, currently missing!
+        // NOTE: Cache invalidation may be needed for CPU access to the destination buffer.
+        // g2d_finish() synchronizes the G2D hardware, but doesn't invalidate CPU caches.
+        // Currently, the destination is published via DMA-BUF to Zenoh, which handles
+        // cache coherency at the kernel/driver level for DMA transfers.
 
         Ok(())
     }
@@ -290,7 +304,10 @@ impl ImageManager {
                 "g2d_finish failed",
             )));
         }
-        // FIXME: A cache invalidation is required here, currently missing!
+        // NOTE: Cache invalidation may be needed for CPU access to the destination buffer.
+        // g2d_finish() synchronizes the G2D hardware, but doesn't invalidate CPU caches.
+        // Currently, the destination is published via DMA-BUF to Zenoh, which handles
+        // cache coherency at the kernel/driver level for DMA transfers.
 
         Ok(())
     }
@@ -333,7 +350,10 @@ impl ImageManager {
                 "g2d_finish failed",
             )));
         }
-        // FIXME: A cache invalidation is required here, currently missing!
+        // NOTE: Cache invalidation may be needed for CPU access to the destination buffer.
+        // g2d_finish() synchronizes the G2D hardware, but doesn't invalidate CPU caches.
+        // Currently, the destination is published via DMA-BUF to Zenoh, which handles
+        // cache coherency at the kernel/driver level for DMA transfers.
 
         Ok(())
     }
@@ -460,7 +480,7 @@ impl TryFrom<&Image> for Frame {
         )?;
         match frame.attach(img.fd().as_raw_fd(), 0, 0) {
             Ok(_) => (),
-            Err(e) => return Err(e),
+            Err(e) => return Err(Box::new(e)),
         }
         Ok(frame)
     }

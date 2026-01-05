@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 Au-Zone Technologies Inc.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  build:
+    uses: ./.github/workflows/build.yml
+
+  sbom:
+    uses: ./.github/workflows/sbom.yml
+
+  release:
+    needs: [test, build, sbom]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Download x86_64 artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: edgefirst-replay-linux-x86_64
+          path: artifacts/x86_64
+
+      - name: Download aarch64 artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: edgefirst-replay-linux-aarch64
+          path: artifacts/aarch64
+
+      - name: Download SBOM
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sbom
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          chmod +x artifacts/x86_64/edgefirst-replay
+          chmod +x artifacts/aarch64/edgefirst-replay
+          cd artifacts/x86_64 && zip ../edgefirst-replay-${{ github.ref_name }}-linux-x86_64.zip edgefirst-replay
+          cd ../aarch64 && zip ../edgefirst-replay-${{ github.ref_name }}-linux-aarch64.zip edgefirst-replay
+
+      - name: Extract changelog
+        id: changelog
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          awk "/^## \[${VERSION}\]/,/^## \[/" CHANGELOG.md | head -n -1 > release_notes.md
+          echo "Release notes:"
+          cat release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
+        with:
+          body_path: release_notes.md
+          files: |
+            artifacts/edgefirst-replay-${{ github.ref_name }}-linux-x86_64.zip
+            artifacts/edgefirst-replay-${{ github.ref_name }}-linux-aarch64.zip
+            artifacts/sbom.json
+          fail_on_unmatched_files: true

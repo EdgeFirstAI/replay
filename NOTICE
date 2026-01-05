@@ -1,0 +1,98 @@
+EdgeFirst Replay
+Copyright 2025 Au-Zone Technologies Inc.
+
+This product includes software developed by Au-Zone Technologies Inc.
+
+Third-party dependencies (first-level only):
+
+- cdr 0.2.4 (MIT/Apache-2.0)
+  CDR serialization/deserialization
+  https://crates.io/crates/cdr
+
+- clap 4.5.38 (MIT/Apache-2.0)
+  Command-line argument parser
+  https://github.com/clap-rs/clap
+
+- ctrlc 3.4.7 (MIT/Apache-2.0)
+  Signal handling
+  https://github.com/Detegr/rust-ctrlc
+
+- dma-buf 0.5.0 (MIT/Apache-2.0)
+  DMA buffer manipulation
+  https://crates.io/crates/dma-buf
+
+- dma-heap 0.4.0 (MIT/Apache-2.0)
+  DMA heap allocation
+  https://crates.io/crates/dma-heap
+
+- edgefirst-schemas 1.3.1 (Apache-2.0)
+  EdgeFirst message schemas
+  https://github.com/EdgeFirstAI/edgefirst-schemas
+
+- log 0.4.27 (MIT/Apache-2.0)
+  Logging facade
+  https://github.com/rust-lang/log
+
+- mcap 0.18.0 (MIT/Apache-2.0)
+  MCAP file format
+  https://github.com/foxglove/mcap
+
+- memmap2 0.9.5 (MIT/Apache-2.0)
+  Memory-mapped file I/O
+  https://github.com/RazrFalcon/memmap2-rs
+
+- nix 0.30.1 (MIT)
+  Unix system calls
+  https://github.com/nix-rust/nix
+
+- serde_json 1.0.140 (MIT/Apache-2.0)
+  JSON serialization
+  https://github.com/serde-rs/json
+
+- tokio 1.45.0 (MIT)
+  Async runtime
+  https://github.com/tokio-rs/tokio
+
+- tracing 0.1.41 (MIT)
+  Application-level tracing
+  https://github.com/tokio-rs/tracing
+
+- tracing-journald 0.3.1 (MIT)
+  systemd journal integration
+  https://github.com/tokio-rs/tracing
+
+- tracing-log 0.2.0 (MIT)
+  Log/tracing bridge
+  https://github.com/tokio-rs/tracing
+
+- tracing-subscriber 0.3.19 (MIT)
+  Tracing subscriber utilities
+  https://github.com/tokio-rs/tracing
+
+- tracing-tracy 0.11.4 (MIT/Apache-2.0)
+  Tracy profiler integration
+  https://github.com/nagisa/rust_tracy_client
+
+- tracy-client 0.18.0 (MIT/Apache-2.0)
+  Tracy profiler client
+  https://github.com/nagisa/rust_tracy_client
+
+- turbojpeg 1.3.3 (MIT)
+  JPEG encoding/decoding
+  https://github.com/honzasp/rust-turbojpeg
+
+- videostream 2.1.4 (Apache-2.0)
+  Video streaming library
+  https://github.com/EdgeFirstAI/videostream
+
+- zenoh 1.3.4 (Apache-2.0/EPL-2.0)
+  Pub/sub messaging
+  https://github.com/eclipse-zenoh/zenoh
+
+g2d-sys sub-crate dependencies:
+
+- libloading 0.8.7 (ISC)
+  Dynamic library loading
+  https://github.com/nagisa/rust_libloading
+
+For the complete dependency tree, see sbom.json in the release assets.

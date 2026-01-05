@@ -1,3 +1,27 @@
+// Copyright 2025 Au-Zone Technologies Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+//! # g2d-sys
+//!
+//! Low-level FFI bindings for NXP i.MX G2D graphics acceleration library.
+//!
+//! ## Safety
+//!
+//! This crate provides raw FFI bindings to `libg2d.so.2`. All functions in the
+//! dynamically-loaded `g2d` struct are inherently unsafe because they:
+//!
+//! - Operate on raw pointers to G2D surfaces and buffers
+//! - Require valid G2D handles from `g2d_open()`
+//! - Expect properly initialized `g2d_surface` structures with valid physical addresses
+//! - May access hardware directly via memory-mapped I/O
+//!
+//! ## Usage Requirements
+//!
+//! - Must be run on NXP i.MX8M Plus or compatible hardware
+//! - Requires `libg2d.so.2` to be available at runtime
+//! - DMA buffers must remain valid for the duration of G2D operations
+//! - `g2d_finish()` must be called to synchronize before accessing output buffers
+
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
@@ -108,15 +132,15 @@ impl From<G2DPhysical> for g2d_phys_addr_t_new {
 
 impl From<&Frame> for g2d_surface {
     fn from(frame: &Frame) -> Self {
-        let from_phys: G2DPhysical = match frame.paddr() {
+        let from_phys: G2DPhysical = match frame.paddr().ok().flatten() {
             Some(v) => (v as u64).into(),
-            None => unsafe { DmaBuf::from_raw_fd(frame.handle()).into() },
+            None => unsafe { DmaBuf::from_raw_fd(frame.handle().unwrap_or(-1)).into() },
         };
-        let fourcc = FourCC::from(frame.fourcc());
+        let fourcc = FourCC::from(frame.fourcc().unwrap_or(0));
+        let width = frame.width().unwrap_or(0);
+        let height = frame.height().unwrap_or(0);
         let planes = match fourcc {
             NV12 => {
-                let width = frame.width();
-                let height = frame.height();
                 let y_size = width * height;
                 let v_size = y_size / 4;
                 let phys = from_phys.into();
@@ -129,11 +153,11 @@ impl From<&Frame> for g2d_surface {
             format: G2DFormat::from(fourcc).format(),
             left: 0,
             top: 0,
-            right: frame.width(),
-            bottom: frame.height(),
-            stride: frame.width(),
-            width: frame.width(),
-            height: frame.height(),
+            right: width,
+            bottom: height,
+            stride: width,
+            width,
+            height,
             blendfunc: 0,
             clrcolor: 0,
             rot: 0,
@@ -144,16 +168,16 @@ impl From<&Frame> for g2d_surface {
 
 impl From<&Frame> for g2d_surface_new {
     fn from(frame: &Frame) -> Self {
-        let from_phys: G2DPhysical = match frame.paddr() {
+        let from_phys: G2DPhysical = match frame.paddr().ok().flatten() {
             Some(v) => (v as u64).into(),
-            None => unsafe { DmaBuf::from_raw_fd(frame.handle()).into() },
+            None => unsafe { DmaBuf::from_raw_fd(frame.handle().unwrap_or(-1)).into() },
         };
-        let fourcc = FourCC::from(frame.fourcc());
+        let fourcc = FourCC::from(frame.fourcc().unwrap_or(0));
+        let width = frame.width().unwrap_or(0);
+        let height = frame.height().unwrap_or(0);
         let planes = match fourcc {
             NV12 => {
-                let width = frame.width() as u64;
-                let height = frame.height() as u64;
-                let y_size = width * height;
+                let y_size = width as u64 * height as u64;
                 let v_size = y_size / 4;
                 let phys = from_phys.into();
                 [phys, phys + y_size, phys + y_size + v_size]
@@ -165,11 +189,11 @@ impl From<&Frame> for g2d_surface_new {
             format: G2DFormat::from(fourcc).format(),
             left: 0,
             top: 0,
-            right: frame.width(),
-            bottom: frame.height(),
-            stride: frame.width(),
-            width: frame.width(),
-            height: frame.height(),
+            right: width,
+            bottom: height,
+            stride: width,
+            width,
+            height,
             blendfunc: 0,
             clrcolor: 0,
             rot: 0,

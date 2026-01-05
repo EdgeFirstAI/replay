@@ -1,17 +1,11 @@
+// Copyright 2025 Au-Zone Technologies Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 use clap::Parser;
 use serde_json::json;
 use std::path::PathBuf;
 use tracing::level_filters::LevelFilter;
 use zenoh::{config::WhatAmI, key_expr::OwnedKeyExpr, Config};
-
-#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Copy)]
-pub enum LabelSetting {
-    Index,
-    Label,
-    Score,
-    LabelScore,
-    Track,
-}
 
 #[derive(Debug, Clone, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -20,8 +14,8 @@ pub struct Args {
     #[arg(env, required = true)]
     pub mcap: PathBuf,
 
-    /// replay speed
-    #[arg(short, long, env, default_value = "1.0")]
+    /// replay speed (must be greater than 0)
+    #[arg(short, long, env, default_value = "1.0", value_parser = parse_replay_speed)]
     pub replay_speed: f64,
 
     /// raw dma topic
@@ -71,6 +65,19 @@ pub struct Args {
     /// disable zenoh multicast scouting
     #[arg(long, env)]
     no_multicast_scouting: bool,
+}
+
+fn parse_replay_speed(s: &str) -> Result<f64, String> {
+    let speed: f64 = s
+        .parse()
+        .map_err(|_| format!("'{s}' is not a valid number"))?;
+    if speed <= 0.0 {
+        return Err("replay speed must be greater than 0".to_string());
+    }
+    if !speed.is_finite() {
+        return Err("replay speed must be a finite number".to_string());
+    }
+    Ok(speed)
 }
 
 // Parse into Ok(None) when the topic string is empty. This covers the edge case

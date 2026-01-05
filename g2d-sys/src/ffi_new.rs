@@ -1,3 +1,6 @@
+// Copyright 2025 Au-Zone Technologies Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::{g2d_blend_func, g2d_format, g2d_rotation};
 
 // g2d 2.3.0 changed the size of the g2d_phys_addr so we need this for

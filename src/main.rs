@@ -1,3 +1,6 @@
+// Copyright 2025 Au-Zone Technologies Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 mod args;
 mod image;
 mod services;
@@ -51,9 +54,7 @@ fn map_mcap<P: AsRef<Path>>(p: P) -> Result<Mmap, String> {
 fn get_topics(mapped: &Mmap) -> HashSet<String> {
     let mut topics = HashSet::new();
 
-    let summary = mcap::Summary::read(mapped);
-    if summary.is_ok() && summary.as_ref().unwrap().is_some() {
-        let summary = summary.unwrap().unwrap();
+    if let Ok(Some(summary)) = mcap::Summary::read(mapped) {
         for c in summary.channels.values() {
             let topic = c.topic.clone();
             topics.insert(topic);
@@ -191,8 +192,6 @@ async fn main() {
 
         let mut has_h264 = false;
 
-        // TODO: When we move to zenoh 1.0, update to use KeBoxTree instead of
-        // Vec<KeyExpr>
         let topics = remove_none(args.topics.clone());
         let ignore_topics = remove_none(args.ignore_topics.clone());
 

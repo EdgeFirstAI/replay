@@ -1,13 +1,12 @@
+// Copyright 2025 Au-Zone Technologies Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::image::{G2DBuffer, Image, ImageManager, RGBA};
-use log::{error, info, trace};
-use nix::libc::{memcpy, mmap, munmap, MAP_SHARED, PROT_READ, PROT_WRITE};
-use std::{
-    error::Error,
-    io::{self, ErrorKind},
-    os::raw::c_void,
-};
+use log::{error, info, trace, warn};
+use nix::libc::{memcpy, mmap, munmap, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE};
+use std::{error::Error, io, os::raw::c_void};
 use turbojpeg::image::RgbaImage;
-use videostream::decoder::{DecodeReturnCode, Decoder, DecoderInputCodec};
+use videostream::decoder::{DecodeReturnCode, Decoder, DecoderCodec};
 
 const BUF_COUNT: usize = 4;
 pub struct VideoDecoder<'a> {
@@ -22,7 +21,7 @@ pub struct VideoDecoder<'a> {
 impl<'a> VideoDecoder<'a> {
     pub fn new() -> Result<Self, Box<dyn Error>> {
         Ok(VideoDecoder {
-            decoder: Decoder::create(DecoderInputCodec::H264, 30),
+            decoder: Decoder::create(DecoderCodec::H264, 30)?,
             frames: Vec::new(),
             g2dbufs: Vec::new(),
             last_data: Vec::new(),
@@ -31,15 +30,11 @@ impl<'a> VideoDecoder<'a> {
     }
 
     fn allocate(&mut self, imgmgr: &'a ImageManager) -> Result<(), Box<dyn Error>> {
-        let crop = self.decoder.crop();
-        info!(
-            "Video dimensions are: {}x{}",
-            crop.get_width(),
-            crop.get_height()
-        );
+        let crop = self.decoder.crop()?;
+        info!("Video dimensions are: {}x{}", crop.width(), crop.height());
         for _ in 0..BUF_COUNT {
             trace!("Allocating frame");
-            let dest_img_g2d_buf = match imgmgr.alloc(crop.get_width(), crop.get_height(), 4) {
+            let dest_img_g2d_buf = match imgmgr.alloc(crop.width(), crop.height(), 4) {
                 Ok(v) => v,
                 Err(e) => {
                     error!("Could not allocate image on g2d: {:?}", e);
@@ -48,8 +43,8 @@ impl<'a> VideoDecoder<'a> {
             };
             self.frames.push(Image::new_preallocated(
                 imgmgr.g2d_buf_fd(&dest_img_g2d_buf),
-                crop.get_width() as u32,
-                crop.get_height() as u32,
+                crop.width() as u32,
+                crop.height() as u32,
                 RGBA,
             ));
             self.g2dbufs.push(dest_img_g2d_buf);
@@ -73,7 +68,7 @@ impl<'a> VideoDecoder<'a> {
                 Ok(v) => v,
                 Err(e) => {
                     error!("Could not decode frame: {:?}", e);
-                    return Err(e);
+                    return Err(Box::new(e));
                 }
             };
             trace!(
@@ -89,11 +84,8 @@ impl<'a> VideoDecoder<'a> {
                 if self.frames.is_empty() {
                     return Ok(None);
                 }
-                match imgmgr.convert_phys(
-                    &f,
-                    &self.frames[index],
-                    &Some(self.decoder.crop().into()),
-                ) {
+                let crop_rect = self.decoder.crop()?.into();
+                match imgmgr.convert_phys(&f, &self.frames[index], &Some(crop_rect)) {
                     Ok(_) => {
                         trace!("Color space conversion success")
                     }
@@ -116,10 +108,7 @@ impl<'a> VideoDecoder<'a> {
         if consumed >= total_len {
             Ok(None)
         } else {
-            Err(Box::new(io::Error::new(
-                ErrorKind::Other,
-                "Could not decode video",
-            )))
+            Err(Box::new(io::Error::other("Could not decode video")))
         }
     }
 
@@ -160,23 +149,45 @@ impl<'a> VideoDecoder<'a> {
             }
         };
         let index = self.frame_count % BUF_COUNT;
+        let frame_size = self.frames[index].size();
+        let jpeg_size = jpeg.as_raw().len();
+
+        // Verify source buffer is large enough for the copy
+        if jpeg_size < frame_size {
+            error!(
+                "JPEG buffer size ({}) is smaller than frame size ({})",
+                jpeg_size, frame_size
+            );
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "JPEG buffer too small for frame",
+            )));
+        }
 
         unsafe {
             let mmap_ = mmap(
                 std::ptr::null_mut(),
-                self.frames[index].size(),
+                frame_size,
                 PROT_READ | PROT_WRITE,
                 MAP_SHARED,
                 self.frames[index].raw_fd(),
                 0,
             );
-            memcpy(
-                mmap_,
-                jpeg.as_ptr() as *const c_void,
-                self.frames[index].size(),
-            );
-            munmap(mmap_, self.frames[index].size());
+
+            // Check for mmap failure
+            if mmap_ == MAP_FAILED {
+                let err = io::Error::last_os_error();
+                error!("mmap failed: {:?}", err);
+                return Err(Box::new(err));
+            }
+
+            memcpy(mmap_, jpeg.as_ptr() as *const c_void, frame_size);
+
+            if munmap(mmap_, frame_size) != 0 {
+                warn!("munmap failed: {:?}", io::Error::last_os_error());
+            }
         }
+        self.frame_count += 1;
         Ok(Some(&self.frames[index]))
     }
 }
