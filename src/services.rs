@@ -1,12 +1,12 @@
 // Copyright 2025 Au-Zone Technologies Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+//! System service management for topic conflict resolution.
+
 use log::{debug, info, warn};
 use serde_json::Value;
-use std::{
-    collections::{HashMap, HashSet},
-    process::Command,
-};
+use std::collections::{HashMap, HashSet};
+use tokio::process::Command;
 use tokio::task::JoinSet;
 pub struct ServiceHandler {
     service_map: HashMap<String, String>,
@@ -67,7 +67,8 @@ impl ServiceHandler {
         let out = Command::new("systemctl")
             .arg("stop")
             .arg(&service_name)
-            .output();
+            .output()
+            .await;
         match out {
             Err(e) => warn!("Error when stopping service {}: {:?}", service_name, e),
             Ok(v) if !v.stderr.is_empty() => {

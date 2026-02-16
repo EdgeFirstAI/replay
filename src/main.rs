@@ -1,6 +1,8 @@
 // Copyright 2025 Au-Zone Technologies Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+//! EdgeFirst MCAP replay service.
+
 mod args;
 mod image;
 mod services;
@@ -13,7 +15,8 @@ use edgefirst_schemas::{
     edgefirst_msgs::DmaBuf, foxglove_msgs::FoxgloveCompressedVideo, sensor_msgs::CompressedImage,
     std_msgs::Header,
 };
-use image::{Image, ImageManager};
+use g2d_sys::G2D;
+use image::Image;
 use log::{error, info, trace};
 use mcap::Message;
 use memmap2::Mmap;
@@ -115,17 +118,13 @@ fn filter_topic(
     to_publish
 }
 
-pub fn remove_none(topics: Vec<Option<OwnedKeyExpr>>) -> Vec<OwnedKeyExpr> {
-    topics.into_iter().flatten().collect()
-}
-
 const INIT_TIME_VAL: u64 = 0;
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
 
-    args.tracy.then(tracy_client::Client::start);
+    let _tracy = args.tracy.then(tracy_client::Client::start);
 
     let stdout_log = tracing_subscriber::fmt::layer()
         .pretty()
@@ -179,6 +178,9 @@ async fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
+    let topics: Vec<OwnedKeyExpr> = args.topics.iter().flatten().cloned().collect();
+    let ignore_topics: Vec<OwnedKeyExpr> = args.ignore_topics.iter().flatten().cloned().collect();
+
     loop {
         let msg_stream = match mcap::MessageStream::new(&mapped) {
             Ok(v) => v,
@@ -191,9 +193,6 @@ async fn main() {
         let src_pid = process::id();
 
         let mut has_h264 = false;
-
-        let topics = remove_none(args.topics.clone());
-        let ignore_topics = remove_none(args.ignore_topics.clone());
 
         info!("Publishing topics: {:?}", topics);
         info!("Ignoring topics: {:?}", ignore_topics);
@@ -232,7 +231,7 @@ async fn main() {
         let mut first_msg_time = INIT_TIME_VAL;
         let mut start = Instant::now();
 
-        let imgmgr = match ImageManager::new() {
+        let g2d = match G2D::new("libg2d.so.2") {
             Ok(v) => v,
             Err(e) => {
                 error!("Could not open G2D: {:?}", e);
@@ -240,7 +239,7 @@ async fn main() {
             }
         };
 
-        info!("Opened G2D with version {}", imgmgr.version());
+        info!("Opened G2D with version {}", g2d.version());
 
         let mut video_decoder = None;
 
@@ -284,7 +283,7 @@ async fn main() {
                 stream_h264(
                     &message,
                     &mut video_decoder,
-                    &imgmgr,
+                    &g2d,
                     src_pid,
                     &args,
                     &session,
@@ -297,7 +296,6 @@ async fn main() {
                 stream_jpeg(
                     &message,
                     &mut video_decoder,
-                    &imgmgr,
                     src_pid,
                     &args,
                     &session,
@@ -336,10 +334,10 @@ async fn main() {
 }
 
 #[instrument(skip_all)]
-fn stream_h264<'a>(
+fn stream_h264(
     message: &Message,
-    video_decoder: &mut Option<VideoDecoder<'a>>,
-    imgmgr: &'a ImageManager,
+    video_decoder: &mut Option<VideoDecoder>,
+    g2d: &G2D,
     src_pid: u32,
     args: &Args,
     session: &Session,
@@ -366,8 +364,7 @@ fn stream_h264<'a>(
         };
     }
     let video_decoder = video_decoder.as_mut().unwrap();
-    // let count = video_decoder.frame_count;
-    let frame = match video_decoder.decode_h264_msg(&video.data, imgmgr) {
+    let frame = match video_decoder.decode_h264_msg(&video.data, g2d) {
         Ok(v) => v,
         Err(e) => {
             error!("Could not decode video message: {:?}", e);
@@ -376,18 +373,15 @@ fn stream_h264<'a>(
     };
 
     if let Some(f) = frame {
-        // use std::{fs::File, io::Write};
-        // let _ = f.dmabuf().memory_map().unwrap().read(
-        //     move |b, _: Option<i32>| {
-        //         let mut file = File::create(format!("./frame{}.rgba", count))
-        //             .expect("Unable to create file");
-        //         file.write(b)?;
-        //         Ok(())
-        //     },
-        //     Some(1),
-        // );
-        let dma_msg = build_dma_msg_image(f, video.header.clone(), src_pid, args);
-        let msg = ZBytes::from(cdr::serialize::<_, _, CdrLe>(&dma_msg, Infinite).unwrap());
+        let dma_msg = build_dma_msg_image(f, video.header.clone(), src_pid);
+        let data = match cdr::serialize::<_, _, CdrLe>(&dma_msg, Infinite) {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to serialize DMA message: {:?}", e);
+                return;
+            }
+        };
+        let msg = ZBytes::from(data);
         let enc = Encoding::APPLICATION_CDR.with_schema("edgefirst_msgs/msg/DmaBuffer");
 
         match session.put(&args.dma_topic, msg).encoding(enc).wait() {
@@ -400,10 +394,9 @@ fn stream_h264<'a>(
 }
 
 #[instrument(skip_all)]
-fn stream_jpeg<'a>(
+fn stream_jpeg(
     message: &Message,
-    video_decoder: &mut Option<VideoDecoder<'a>>,
-    imgmgr: &'a ImageManager,
+    video_decoder: &mut Option<VideoDecoder>,
     src_pid: u32,
     args: &Args,
     session: &Session,
@@ -430,7 +423,7 @@ fn stream_jpeg<'a>(
         };
     }
     let video_decoder = video_decoder.as_mut().unwrap();
-    let frame = match video_decoder.decode_jpeg_msg(&image.data, imgmgr) {
+    let frame = match video_decoder.decode_jpeg_msg(&image.data) {
         Ok(v) => v,
         Err(e) => {
             error!("Could not decode video message: {:?}", e);
@@ -438,8 +431,15 @@ fn stream_jpeg<'a>(
         }
     };
     if let Some(f) = frame {
-        let dma_msg = build_dma_msg_image(f, image.header.clone(), src_pid, args);
-        let msg = ZBytes::from(cdr::serialize::<_, _, CdrLe>(&dma_msg, Infinite).unwrap());
+        let dma_msg = build_dma_msg_image(f, image.header.clone(), src_pid);
+        let data = match cdr::serialize::<_, _, CdrLe>(&dma_msg, Infinite) {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to serialize DMA message: {:?}", e);
+                return;
+            }
+        };
+        let msg = ZBytes::from(data);
         let enc = Encoding::APPLICATION_CDR.with_schema("edgefirst_msgs/msg/DmaBuffer");
 
         match session.put(&args.dma_topic, msg).encoding(enc).wait() {
@@ -451,15 +451,11 @@ fn stream_jpeg<'a>(
     }
 }
 
-fn build_dma_msg_image(buf: &Image, header: Header, pid: u32, args: &Args) -> DmaBuf {
-    let _ = args;
-
-    // let ts = buf.timestamp();
+fn build_dma_msg_image(buf: &Image, header: Header, pid: u32) -> DmaBuf {
     let width = buf.width();
     let height = buf.height();
     let fourcc = buf.format().into();
     let dma_buf = buf.raw_fd();
-    // let dma_buf = buf.original_fd;
     let length = buf.size() as u32;
     let msg = DmaBuf {
         header,
@@ -467,7 +463,7 @@ fn build_dma_msg_image(buf: &Image, header: Header, pid: u32, args: &Args) -> Dm
         fd: dma_buf,
         width,
         height,
-        stride: width,
+        stride: width * 4,
         fourcc,
         length,
     };

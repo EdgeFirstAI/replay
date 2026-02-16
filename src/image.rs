@@ -1,37 +1,28 @@
 // Copyright 2025 Au-Zone Technologies Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+//! Hardware-accelerated image management using NXP G2D.
+//!
+//! Provides DMA-heap buffer allocation, G2D surface creation, and
+//! color space conversion (NV12/YUYV → RGBA) for the replay pipeline.
+
 use core::fmt;
-use dma_buf::DmaBuf;
 use dma_heap::{Heap, HeapKind};
 use g2d_sys::{
-    g2d as g2d_library, g2d_buf, g2d_rotation_G2D_ROTATION_0, g2d_rotation_G2D_ROTATION_180,
-    g2d_rotation_G2D_ROTATION_270, g2d_rotation_G2D_ROTATION_90, g2d_surface, g2d_surface_new,
-    guess_version, G2DFormat, G2DPhysical,
+    g2d_format, g2d_format_G2D_NV12, g2d_format_G2D_RGB888, g2d_format_G2D_RGBA8888,
+    g2d_format_G2D_RGBX8888, g2d_format_G2D_YUYV, g2d_rotation_G2D_ROTATION_0, G2DPhysical,
+    G2DSurface, G2D,
 };
-
-// Compile-time assertion: g2d_surface_new must be at least as large as g2d_surface
-// for the pointer cast in convert_new/convert_phys_new to be safe.
-// g2d_surface_new extends g2d_surface with additional fields at the end.
-const _: () = assert!(
-    std::mem::size_of::<g2d_surface_new>() >= std::mem::size_of::<g2d_surface>(),
-    "g2d_surface_new must be at least as large as g2d_surface for safe casting"
-);
-use log::{debug, warn};
-use nix::libc::{mmap, munmap, MAP_SHARED, PROT_READ, PROT_WRITE};
+use log::warn;
 use std::{
     error::Error,
     ffi::c_void,
     io,
-    os::{
-        fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd},
-        unix::io::OwnedFd,
-    },
+    os::fd::{AsFd, AsRawFd, BorrowedFd},
     ptr::null_mut,
     slice::{from_raw_parts, from_raw_parts_mut},
 };
-use turbojpeg::libc::dup;
-use videostream::{camera::CameraBuffer, encoder::VSLRect, fourcc::FourCC, frame::Frame};
+use videostream::{encoder::VSLRect, fourcc::FourCC, frame::Frame};
 
 pub const RGB3: FourCC = FourCC(*b"RGB3");
 pub const RGBX: FourCC = FourCC(*b"RGBX");
@@ -57,336 +48,140 @@ impl From<VSLRect> for Rect {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Copy, Clone, Debug)]
-pub enum Rotation {
-    Rotation0 = g2d_rotation_G2D_ROTATION_0 as isize,
-    Rotation90 = g2d_rotation_G2D_ROTATION_90 as isize,
-    Rotation180 = g2d_rotation_G2D_ROTATION_180 as isize,
-    Rotation270 = g2d_rotation_G2D_ROTATION_270 as isize,
-}
-pub struct G2DBuffer<'a> {
-    buf: *mut g2d_buf,
-    imgmgr: &'a ImageManager,
-}
-
-#[allow(dead_code)]
-impl G2DBuffer<'_> {
-    pub unsafe fn buf_handle(&self) -> *mut c_void {
-        (*self.buf).buf_handle
-    }
-
-    pub unsafe fn buf_vaddr(&self) -> *mut c_void {
-        (*self.buf).buf_vaddr
-    }
-
-    pub fn buf_paddr(&self) -> i32 {
-        unsafe { (*self.buf).buf_paddr }
-    }
-
-    pub fn buf_size(&self) -> i32 {
-        unsafe { (*self.buf).buf_size }
+/// Convert a videostream FourCC to a G2D format constant.
+fn fourcc_to_g2d_format(fourcc: FourCC) -> Result<g2d_format, io::Error> {
+    match fourcc {
+        RGB3 => Ok(g2d_format_G2D_RGB888),
+        RGBX => Ok(g2d_format_G2D_RGBX8888),
+        RGBA => Ok(g2d_format_G2D_RGBA8888),
+        YUYV => Ok(g2d_format_G2D_YUYV),
+        NV12 => Ok(g2d_format_G2D_NV12),
+        _ => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("unsupported FourCC: {fourcc}"),
+        )),
     }
 }
 
-impl Drop for G2DBuffer<'_> {
-    fn drop(&mut self) {
-        self.imgmgr.free(self);
-        debug!("G2D Buffer freed")
+/// Bytes per pixel row for the given format and width.
+const fn format_row_stride(format: FourCC, width: u32) -> usize {
+    match format {
+        RGB3 => 3 * width as usize,
+        RGBX | RGBA => 4 * width as usize,
+        YUYV => 2 * width as usize,
+        // NV12: Y plane stride is width, but total size is width * height * 3/2
+        NV12 => width as usize,
+        _ => 4 * width as usize, // default to 4 bpp
     }
 }
 
-pub struct ImageManager {
-    lib: g2d_library,
-    version: g2d_sys::Version,
-    handle: *mut c_void,
-}
-
-const G2D_2_3_0: g2d_sys::Version = g2d_sys::Version {
-    major: 6,
-    minor: 4,
-    patch: 11,
-    num: 1049711,
-};
-
-impl ImageManager {
-    pub fn new() -> Result<Self, Box<dyn Error>> {
-        let lib = unsafe { g2d_library::new("libg2d.so.2") }?;
-        let mut handle: *mut c_void = null_mut();
-
-        if unsafe { lib.g2d_open(&mut handle) } != 0 {
-            let err = io::Error::last_os_error();
-            return Err(Box::new(err));
-        }
-        let version = guess_version(&lib).unwrap_or(G2D_2_3_0);
-        Ok(Self {
-            lib,
-            handle,
-            version,
-        })
-    }
-
-    pub fn version(&self) -> g2d_sys::Version {
-        self.version
-    }
-
-    pub fn alloc(
-        &self,
-        width: i32,
-        height: i32,
-        channels: i32,
-    ) -> Result<G2DBuffer<'_>, Box<dyn Error>> {
-        let g2d_buf = unsafe { self.lib.g2d_alloc(width * height * channels, 0) };
-        if g2d_buf.is_null() {
-            return Err(Box::new(io::Error::other("g2d_alloc failed")));
-        }
-        debug!("G2D Buffer alloc'd");
-        Ok(G2DBuffer {
-            buf: g2d_buf,
-            imgmgr: self,
-        })
-    }
-
-    pub fn free(&self, buf: &mut G2DBuffer) {
-        unsafe {
-            self.lib.g2d_free(buf.buf);
-        }
-    }
-
-    pub fn g2d_buf_fd(&self, buf: &G2DBuffer) -> OwnedFd {
-        let fd = unsafe { self.lib.g2d_buf_export_fd(buf.buf) };
-        unsafe { OwnedFd::from_raw_fd(fd) }
-    }
-
-    #[allow(dead_code)]
-    pub fn convert(
-        &self,
-        from: &Image,
-        to: &Image,
-        crop: Option<Rect>,
-        rot: Rotation,
-    ) -> Result<(), Box<dyn Error>> {
-        if self.version >= G2D_2_3_0 {
-            self.convert_new(from, to, crop, rot)
-        } else {
-            self.convert_old(from, to, crop, rot)
-        }
-    }
-
-    pub fn convert_old(
-        &self,
-        from: &Image,
-        to: &Image,
-        crop: Option<Rect>,
-        rot: Rotation,
-    ) -> Result<(), Box<dyn Error>> {
-        let mut src: g2d_surface = from.try_into()?;
-
-        if let Some(r) = crop {
-            src.left = r.x;
-            src.top = r.y;
-            src.right = r.x + r.width;
-            src.bottom = r.y + r.height;
-        }
-
-        let mut dst: g2d_surface = to.try_into()?;
-
-        dst.rot = rot as u32;
-
-        if unsafe { self.lib.g2d_blit(self.handle, &mut src, &mut dst) } != 0 {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "g2d_blit failed",
-            )));
-        }
-        if unsafe { self.lib.g2d_finish(self.handle) } != 0 {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "g2d_finish failed",
-            )));
-        }
-        // NOTE: Cache invalidation may be needed for CPU access to the destination buffer.
-        // g2d_finish() synchronizes the G2D hardware, but doesn't invalidate CPU caches.
-        // Currently, the destination is published via DMA-BUF to Zenoh, which handles
-        // cache coherency at the kernel/driver level for DMA transfers.
-
-        Ok(())
-    }
-
-    pub fn convert_new(
-        &self,
-        from: &Image,
-        to: &Image,
-        crop: Option<Rect>,
-        rot: Rotation,
-    ) -> Result<(), Box<dyn Error>> {
-        let mut src: g2d_surface_new = from.try_into()?;
-
-        if let Some(r) = crop {
-            src.left = r.x;
-            src.top = r.y;
-            src.right = r.x + r.width;
-            src.bottom = r.y + r.height;
-        }
-
-        let mut dst: g2d_surface_new = to.try_into()?;
-
-        dst.rot = rot as u32;
-
-        if unsafe {
-            // force cast the g2d_surface_new to g2d_surface so it can be sent to the
-            // g2d_blit function
-            self.lib.g2d_blit(
-                self.handle,
-                &raw mut src as *mut g2d_surface,
-                &raw mut dst as *mut g2d_surface,
-            )
-        } != 0
-        {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "g2d_blit failed",
-            )));
-        }
-        if unsafe { self.lib.g2d_finish(self.handle) } != 0 {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "g2d_finish failed",
-            )));
-        }
-        // NOTE: Cache invalidation may be needed for CPU access to the destination buffer.
-        // g2d_finish() synchronizes the G2D hardware, but doesn't invalidate CPU caches.
-        // Currently, the destination is published via DMA-BUF to Zenoh, which handles
-        // cache coherency at the kernel/driver level for DMA transfers.
-
-        Ok(())
-    }
-
-    pub fn convert_phys(
-        &self,
-        from: &Frame,
-        to: &Image,
-        crop: &Option<Rect>,
-    ) -> Result<(), Box<dyn Error>> {
-        if self.version >= G2D_2_3_0 {
-            self.convert_phys_new(from, to, crop)
-        } else {
-            self.convert_phys_old(from, to, crop)
-        }
-    }
-
-    fn convert_phys_old(
-        &self,
-        from: &Frame,
-        to: &Image,
-        crop: &Option<Rect>,
-    ) -> Result<(), Box<dyn Error>> {
-        let mut src: g2d_surface = from.into();
-
-        if let Some(r) = crop {
-            src.left = r.x;
-            src.top = r.y;
-            src.right = r.x + r.width;
-            src.bottom = r.y + r.height;
-        }
-
-        let mut dst: g2d_surface = to.try_into()?;
-
-        if unsafe { self.lib.g2d_blit(self.handle, &mut src, &mut dst) } != 0 {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "g2d_blit failed",
-            )));
-        }
-        if unsafe { self.lib.g2d_finish(self.handle) } != 0 {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "g2d_finish failed",
-            )));
-        }
-        // NOTE: Cache invalidation may be needed for CPU access to the destination buffer.
-        // g2d_finish() synchronizes the G2D hardware, but doesn't invalidate CPU caches.
-        // Currently, the destination is published via DMA-BUF to Zenoh, which handles
-        // cache coherency at the kernel/driver level for DMA transfers.
-
-        Ok(())
-    }
-
-    fn convert_phys_new(
-        &self,
-        from: &Frame,
-        to: &Image,
-        crop: &Option<Rect>,
-    ) -> Result<(), Box<dyn Error>> {
-        let mut src: g2d_surface_new = from.into();
-
-        if let Some(r) = crop {
-            src.left = r.x;
-            src.top = r.y;
-            src.right = r.x + r.width;
-            src.bottom = r.y + r.height;
-        }
-
-        let mut dst: g2d_surface_new = to.try_into()?;
-
-        if unsafe {
-            // force cast the g2d_surface_new to g2d_surface so it can be sent to the
-            // g2d_blit function
-            self.lib.g2d_blit(
-                self.handle,
-                &raw mut src as *mut g2d_surface,
-                &raw mut dst as *mut g2d_surface,
-            )
-        } != 0
-        {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "g2d_blit failed",
-            )));
-        }
-        if unsafe { self.lib.g2d_finish(self.handle) } != 0 {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "g2d_finish failed",
-            )));
-        }
-        // NOTE: Cache invalidation may be needed for CPU access to the destination buffer.
-        // g2d_finish() synchronizes the G2D hardware, but doesn't invalidate CPU caches.
-        // Currently, the destination is published via DMA-BUF to Zenoh, which handles
-        // cache coherency at the kernel/driver level for DMA transfers.
-
-        Ok(())
+/// Total buffer size in bytes for the given dimensions and format.
+pub const fn image_size(width: u32, height: u32, format: FourCC) -> usize {
+    match format {
+        NV12 => (width as usize) * (height as usize) * 3 / 2,
+        _ => format_row_stride(format, width) * height as usize,
     }
 }
 
-impl Drop for ImageManager {
-    fn drop(&mut self) {
-        _ = unsafe { self.lib.g2d_close(self.handle) };
-        debug!("G2D closed");
+/// Build a `G2DSurface` from an `Image` for use with G2D blit operations.
+pub fn image_to_surface(img: &Image) -> Result<G2DSurface, Box<dyn Error>> {
+    let phys = G2DPhysical::new(img.raw_fd())?;
+    let addr = phys.address();
+    let format = fourcc_to_g2d_format(img.format)?;
+
+    let planes = match img.format {
+        NV12 => {
+            let y_size = img.width as u64 * img.height as u64;
+            [addr, addr + y_size, 0]
+        }
+        _ => [addr, 0, 0],
+    };
+
+    Ok(G2DSurface {
+        format,
+        planes,
+        left: 0,
+        top: 0,
+        right: img.width as i32,
+        bottom: img.height as i32,
+        stride: img.width as i32,
+        width: img.width as i32,
+        height: img.height as i32,
+        blendfunc: 0,
+        global_alpha: 255,
+        clrcolor: 0,
+        rot: g2d_rotation_G2D_ROTATION_0,
+    })
+}
+
+/// Build a `G2DSurface` from a videostream `Frame` (VPU decoder output).
+pub fn frame_to_surface(frame: &Frame) -> Result<G2DSurface, Box<dyn Error>> {
+    let phys: G2DPhysical = match frame.paddr().ok().flatten() {
+        Some(v) => (v as u64).into(),
+        None => G2DPhysical::new(frame.handle()?)?,
+    };
+    let addr = phys.address();
+    let fourcc_val = frame.fourcc().unwrap_or(0);
+    let fourcc = FourCC::from(fourcc_val);
+    let format = fourcc_to_g2d_format(fourcc)?;
+    let width = frame.width().unwrap_or(0);
+    let height = frame.height().unwrap_or(0);
+
+    let planes = match fourcc {
+        NV12 => {
+            let y_size = width as u64 * height as u64;
+            [addr, addr + y_size, 0]
+        }
+        _ => [addr, 0, 0],
+    };
+
+    Ok(G2DSurface {
+        format,
+        planes,
+        left: 0,
+        top: 0,
+        right: width,
+        bottom: height,
+        stride: width,
+        width,
+        height,
+        blendfunc: 0,
+        global_alpha: 255,
+        clrcolor: 0,
+        rot: g2d_rotation_G2D_ROTATION_0,
+    })
+}
+
+/// Perform a G2D blit from a VPU Frame to an Image, with optional crop.
+pub fn convert_frame(
+    g2d: &G2D,
+    frame: &Frame,
+    dest: &Image,
+    crop: Option<&Rect>,
+) -> Result<(), Box<dyn Error>> {
+    let mut src = frame_to_surface(frame)?;
+    if let Some(r) = crop {
+        src.left = r.x;
+        src.top = r.y;
+        src.right = r.x + r.width;
+        src.bottom = r.y + r.height;
     }
+    let dst = image_to_surface(dest)?;
+    g2d.blit(&src, &dst)?;
+    g2d.finish()?;
+    // NOTE: g2d_finish() synchronizes the G2D hardware but does NOT invalidate
+    // CPU caches. On cached CMA heaps, the consumer must perform
+    // DMA_BUF_IOCTL_SYNC with DRM PRIME attachment for correct reads.
+    // See g2d-rs ARCHITECTURE.md for the full cache coherency protocol.
+    Ok(())
 }
 
 #[derive(Debug)]
 pub struct Image {
-    fd: OwnedFd,
+    fd: std::os::unix::io::OwnedFd,
     width: u32,
     height: u32,
     format: FourCC,
-}
-
-const fn format_row_stride(format: FourCC, width: u32) -> usize {
-    match format {
-        RGB3 => 3 * width as usize,
-        RGBX => 4 * width as usize,
-        RGBA => 4 * width as usize,
-        YUYV => 2 * width as usize,
-        NV12 => width as usize / 2 + width as usize,
-        _ => todo!(),
-    }
-}
-
-const fn image_size(width: u32, height: u32, format: FourCC) -> usize {
-    format_row_stride(format, width) * height as usize
 }
 
 impl Image {
@@ -401,36 +196,12 @@ impl Image {
         })
     }
 
-    pub fn new_preallocated(fd: OwnedFd, width: u32, height: u32, format: FourCC) -> Self {
-        Self {
-            fd,
-            width,
-            height,
-            format,
-        }
-    }
-
-    pub fn from_camera(buffer: &CameraBuffer) -> Result<Self, Box<dyn Error>> {
-        let fd = buffer.fd();
-
-        Ok(Self {
-            fd: fd.try_clone_to_owned()?,
-            width: buffer.width() as u32,
-            height: buffer.height() as u32,
-            format: buffer.format(),
-        })
-    }
-
     pub fn fd(&self) -> BorrowedFd<'_> {
         self.fd.as_fd()
     }
 
     pub fn raw_fd(&self) -> i32 {
         self.fd.as_raw_fd()
-    }
-
-    pub fn dmabuf(&self) -> DmaBuf {
-        unsafe { DmaBuf::from_raw_fd(dup(self.fd.as_raw_fd())) }
     }
 
     pub fn width(&self) -> u32 {
@@ -446,90 +217,28 @@ impl Image {
     }
 
     pub fn size(&self) -> usize {
-        format_row_stride(self.format, self.width) * self.height as usize
+        image_size(self.width, self.height, self.format)
     }
 
-    pub fn mmap(&mut self) -> MappedImage {
-        let image_size = image_size(self.width, self.height, self.format);
-        unsafe {
-            let mmap = mmap(
+    /// Create a persistent memory mapping of this image buffer.
+    pub fn mmap(&self) -> Result<MappedImage, io::Error> {
+        let size = self.size();
+        let ptr = unsafe {
+            libc::mmap(
                 null_mut(),
-                image_size,
-                PROT_READ | PROT_WRITE,
-                MAP_SHARED,
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
                 self.raw_fd(),
                 0,
-            ) as *mut u8;
-            MappedImage {
-                mmap,
-                len: image_size,
-            }
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
         }
-    }
-}
-
-impl TryFrom<&Image> for Frame {
-    type Error = Box<dyn Error>;
-
-    fn try_from(img: &Image) -> Result<Self, Self::Error> {
-        let frame = Frame::new(
-            img.width(),
-            img.height(),
-            0,
-            img.format().to_string().as_str(),
-        )?;
-        match frame.attach(img.fd().as_raw_fd(), 0, 0) {
-            Ok(_) => (),
-            Err(e) => return Err(Box::new(e)),
-        }
-        Ok(frame)
-    }
-}
-
-impl TryFrom<&Image> for g2d_surface {
-    type Error = std::io::Error;
-
-    fn try_from(img: &Image) -> Result<Self, Self::Error> {
-        let to_fd = img.fd.try_clone()?;
-        let to_phys: G2DPhysical = DmaBuf::from(to_fd).into();
-        Ok(Self {
-            planes: [to_phys.into(), 0, 0],
-            format: G2DFormat::from(img.format).format(),
-            left: 0,
-            top: 0,
-            right: img.width as i32,
-            bottom: img.height as i32,
-            stride: img.width as i32,
-            width: img.width as i32,
-            height: img.height as i32,
-            blendfunc: 0,
-            clrcolor: 0,
-            rot: 0,
-            global_alpha: 0,
-        })
-    }
-}
-
-impl TryFrom<&Image> for g2d_surface_new {
-    type Error = std::io::Error;
-
-    fn try_from(img: &Image) -> Result<Self, Self::Error> {
-        let to_fd = img.fd.try_clone()?;
-        let to_phys: G2DPhysical = DmaBuf::from(to_fd).into();
-        Ok(Self {
-            planes: [to_phys.into(), 0, 0],
-            format: G2DFormat::from(img.format).format(),
-            left: 0,
-            top: 0,
-            right: img.width as i32,
-            bottom: img.height as i32,
-            stride: img.width as i32,
-            width: img.width as i32,
-            height: img.height as i32,
-            blendfunc: 0,
-            clrcolor: 0,
-            rot: 0,
-            global_alpha: 0,
+        Ok(MappedImage {
+            mmap: ptr as *mut u8,
+            len: size,
         })
     }
 }
@@ -558,10 +267,11 @@ impl MappedImage {
         unsafe { from_raw_parts_mut(self.mmap, self.len) }
     }
 }
+
 impl Drop for MappedImage {
     fn drop(&mut self) {
-        if unsafe { munmap(self.mmap.cast::<c_void>(), self.len) } > 0 {
-            warn!("unmap failed!");
+        if unsafe { libc::munmap(self.mmap.cast::<c_void>(), self.len) } != 0 {
+            warn!("munmap failed: {:?}", io::Error::last_os_error());
         }
     }
 }

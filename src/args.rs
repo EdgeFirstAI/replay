@@ -1,6 +1,8 @@
 // Copyright 2025 Au-Zone Technologies Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+//! CLI argument parsing and Zenoh configuration.
+
 use clap::Parser;
 use serde_json::json;
 use std::path::PathBuf;
@@ -86,11 +88,11 @@ fn parse_topics(topics: &str) -> Result<Option<OwnedKeyExpr>, String> {
     if topics.is_empty() {
         return Ok(None);
     }
-    let mut _topics = topics.to_owned();
-    if _topics.starts_with("/") {
-        _topics = "rt".to_owned() + &_topics;
+    let mut topic = topics.to_owned();
+    if topic.starts_with("/") {
+        topic = "rt".to_owned() + &topic;
     }
-    match OwnedKeyExpr::autocanonize(_topics) {
+    match OwnedKeyExpr::autocanonize(topic) {
         Ok(v) => Ok(Some(v)),
         Err(_) => Err(format!("Could not parse topic: {topics}")),
     }
