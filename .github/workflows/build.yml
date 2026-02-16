@@ -55,3 +55,14 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: target/release/edgefirst-replay
+
+  # Sentinel job for release.yml to wait on via lewagon/wait-on-check-action.
+  # This ensures all build artifacts are ready before the release workflow
+  # downloads them.
+  verify-builds:
+    name: Verify Builds
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: All builds completed
+        run: echo "All build jobs completed successfully"
