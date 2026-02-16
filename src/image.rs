@@ -18,9 +18,9 @@ use std::{
     error::Error,
     ffi::c_void,
     io,
-    os::fd::{AsFd, AsRawFd, BorrowedFd},
+    os::fd::AsRawFd,
     ptr::null_mut,
-    slice::{from_raw_parts, from_raw_parts_mut},
+    slice::from_raw_parts_mut,
 };
 use videostream::{encoder::VSLRect, fourcc::FourCC, frame::Frame};
 
@@ -196,10 +196,6 @@ impl Image {
         })
     }
 
-    pub fn fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
-    }
-
     pub fn raw_fd(&self) -> i32 {
         self.fd.as_raw_fd()
     }
@@ -259,10 +255,6 @@ pub struct MappedImage {
 }
 
 impl MappedImage {
-    pub fn as_slice(&self) -> &[u8] {
-        unsafe { from_raw_parts(self.mmap, self.len) }
-    }
-
     pub fn as_slice_mut(&mut self) -> &mut [u8] {
         unsafe { from_raw_parts_mut(self.mmap, self.len) }
     }

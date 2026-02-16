@@ -104,10 +104,7 @@ impl VideoDecoder {
         }
     }
 
-    pub fn decode_jpeg_msg(
-        &mut self,
-        data: &[u8],
-    ) -> Result<Option<&Image>, Box<dyn Error>> {
+    pub fn decode_jpeg_msg(&mut self, data: &[u8]) -> Result<Option<&Image>, Box<dyn Error>> {
         let jpeg: RgbaImage = match turbojpeg::decompress_image(data) {
             Ok(v) => v,
             Err(e) => {
@@ -137,8 +134,7 @@ impl VideoDecoder {
 
         // Use the persistent mmap for this frame buffer
         let mapping = &mut self.mappings[index];
-        mapping.as_slice_mut()[..frame_size]
-            .copy_from_slice(&jpeg.as_raw()[..frame_size]);
+        mapping.as_slice_mut()[..frame_size].copy_from_slice(&jpeg.as_raw()[..frame_size]);
 
         self.frame_count += 1;
         Ok(Some(&self.frames[index]))

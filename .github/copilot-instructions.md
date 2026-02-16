@@ -116,7 +116,7 @@ Update version in:
 ```bash
 cargo test               # Run all tests
 cargo clippy             # Lint
-cargo +nightly fmt --all # Format
+cargo fmt --all # Format
 ```
 
 ---
@@ -241,7 +241,7 @@ cargo build --release --target aarch64-unknown-linux-gnu
 cargo check
 
 # Format
-cargo +nightly fmt --all
+cargo fmt --all
 
 # Lint
 cargo clippy -- -W clippy::all

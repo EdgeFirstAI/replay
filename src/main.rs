@@ -280,26 +280,13 @@ async fn main() {
 
             if schema == "foxglove_msgs/msg/CompressedVideo" {
                 has_h264 = true;
-                stream_h264(
-                    &message,
-                    &mut video_decoder,
-                    &g2d,
-                    src_pid,
-                    &args,
-                    &session,
-                );
+                stream_h264(&message, &mut video_decoder, &g2d, src_pid, &args, &session);
                 args.tracy.then(|| secondary_frame_mark!("h264"));
             }
 
             // we don't use jpeg for DMA buffer when h264 is present
             if !has_h264 && schema == "sensor_msgs/msg/CompressedImage" {
-                stream_jpeg(
-                    &message,
-                    &mut video_decoder,
-                    src_pid,
-                    &args,
-                    &session,
-                );
+                stream_jpeg(&message, &mut video_decoder, src_pid, &args, &session);
                 args.tracy.then(|| secondary_frame_mark!("jpeg"));
             }
 
