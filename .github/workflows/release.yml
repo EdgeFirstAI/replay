@@ -150,8 +150,8 @@ jobs:
           chmod +x artifacts/x86_64/edgefirst-replay
           chmod +x artifacts/aarch64/edgefirst-replay
 
-          (cd artifacts/x86_64 && zip "../../release-assets/edgefirst-replay-${VERSION}-linux-x86_64.zip" edgefirst-replay)
-          (cd artifacts/aarch64 && zip "../../release-assets/edgefirst-replay-${VERSION}-linux-aarch64.zip" edgefirst-replay)
+          cp artifacts/x86_64/edgefirst-replay "release-assets/edgefirst-replay-${VERSION}-linux-x86_64"
+          cp artifacts/aarch64/edgefirst-replay "release-assets/edgefirst-replay-${VERSION}-linux-aarch64"
 
           # SBOM (cargo-cyclonedx produces *.cdx.json)
           SBOM_FILE=$(find artifacts/sbom -name "*.cdx.json" -type f 2>/dev/null | head -1)
@@ -182,8 +182,8 @@ jobs:
 
             ## Assets
 
-            - **Linux x86_64**: `edgefirst-replay-${{ needs.prepare-release.outputs.version }}-linux-x86_64.zip`
-            - **Linux ARM64**: `edgefirst-replay-${{ needs.prepare-release.outputs.version }}-linux-aarch64.zip`
+            - **Linux x86_64**: `edgefirst-replay-${{ needs.prepare-release.outputs.version }}-linux-x86_64`
+            - **Linux ARM64**: `edgefirst-replay-${{ needs.prepare-release.outputs.version }}-linux-aarch64`
             - **SBOM**: `edgefirst-replay-${{ needs.prepare-release.outputs.version }}-sbom.json` (CycloneDX format)
           files: |
             release-assets/*
