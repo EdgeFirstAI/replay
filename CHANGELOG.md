@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-02-16
+
+### Changed
+
+- Migrated from vendored g2d-sys 2.0.0 to upstream g2d-sys 1.2.0
+- Release workflow uses wait-on-check pattern for cross-workflow artifact downloads
+- Simplified rustfmt.toml to stable-only options (removed nightly requirements)
+- Replaced per-frame mmap/munmap with persistent MappedImage mappings
+- Used tokio::process::Command instead of std::process::Command in async context
+
+### Added
+
+- AI assistant development guidelines (.github/copilot-instructions.md)
+- CI and EdgeFirst badges to README
+- Cache coherency documentation in ARCHITECTURE.md
+- Verify Builds sentinel job in build.yml for release coordination
+
+### Removed
+
+- Vendored g2d-sys sub-crate (replaced by upstream crate)
+- Dead code: `Image::fd()` and `MappedImage::as_slice()` methods
+- dma-buf dependency (no longer needed with upstream g2d-sys)
+
+### Fixed
+
+- CDR serialize error handling (replaced unwrap with match)
+- munmap error check (changed `> 0` to `!= 0`)
+- Tracy client handle lifetime (stored in variable to prevent premature drop)
+- SBOM artifact naming in release workflow (handles *.cdx.json from cargo-cyclonedx)
+
 ## [2.0.0] - 2026-01-05
 
 ### Changed
