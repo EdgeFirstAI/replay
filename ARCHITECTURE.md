@@ -51,18 +51,18 @@ H.264 and JPEG decoding with frame buffer management:
 
 - Hardware VPU decoder via videostream library
 - Frame buffer pool (4 buffers for pipelining)
-- JPEG fallback via turbojpeg
-- G2D buffer allocation for decoded frames
+- JPEG fallback via turbojpeg with persistent mmap
+- DMA-heap buffer allocation for decoded frames
 
 ### image.rs
 
-G2D graphics library wrapper for hardware-accelerated operations:
+Hardware-accelerated image management using NXP G2D:
 
-- DMA buffer allocation via dma-heap
-- Color space conversion (NV12/YUYV to RGBA)
-- Memory mapping with mmap/munmap
-- Physical address handling for zero-copy
-- G2D version detection (supports 6.4.3+)
+- DMA buffer allocation via dma-heap (CMA heap)
+- G2D surface creation from Images and VPU Frames
+- Color space conversion (NV12/YUYV to RGBA) via G2D blit
+- Persistent memory mapping with mmap/munmap
+- Physical address resolution via G2DPhysical
 
 ### args.rs
 
@@ -100,16 +100,6 @@ replayed topics.
 
 Topics not matching any prefix are ignored (no service stopped).
 
-### g2d-sys (sub-crate)
-
-FFI bindings for NXP G2D graphics library:
-
-- Safe wrapper around G2D C library
-- Format conversions (FourCC to G2D format)
-- Physical address handling
-- Frame conversion utilities
-- Version compatibility (handles G2D 2.3.0 API changes)
-
 ## Data Flow
 
 1. **MCAP Parsing**: File is memory-mapped and parsed using the mcap crate
@@ -145,10 +135,31 @@ A pool of 4 frame buffers enables pipelining:
 - **G2D**: Hardware 2D graphics operations
 - **DMA-Heap**: Kernel-managed DMA buffer allocation
 
+## Cache Coherency
+
+DMA-buf buffers allocated from the CMA heap (`linux,cma`) are CPU-cached.
+After G2D writes to these buffers via DMA, consumers must follow the complete
+cache coherency protocol to avoid reading stale data:
+
+1. **DRM PRIME import** — `DRM_IOCTL_PRIME_FD_TO_HANDLE` creates a persistent
+   `dma_buf_attach`. Without this, `DMA_BUF_IOCTL_SYNC` is a no-op.
+2. **Persistent mmap** — map once, keep for the buffer lifetime.
+3. **SYNC_START** before CPU reads — invalidates CPU caches.
+4. **SYNC_END** after CPU reads — completes the access.
+
+See the [g2d-rs ARCHITECTURE.md](https://github.com/EdgeFirstAI/g2d-rs/blob/main/ARCHITECTURE.md)
+for complete details.
+
+**Current status:** The replay service does not implement DRM PRIME import.
+Consumers reading published DMA-buf fds must handle cache coherency themselves,
+or the system must use `linux,cma-uncached` heaps where no cache maintenance
+is required.
+
 ## Dependencies
 
 ### Runtime
 
+- **g2d-sys 1.2.0**: NXP G2D FFI bindings with automatic ABI version dispatch
 - **videostream 2.1.4**: Video codec abstraction (V4L2 CODEC API)
 - **zenoh 1.3.4**: Pub/sub messaging
 - **mcap 0.18.0**: MCAP file format
