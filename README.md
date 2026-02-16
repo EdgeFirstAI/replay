@@ -1,6 +1,9 @@
 # EdgeFirst Replay
 
+[![Build](https://github.com/EdgeFirstAI/replay/actions/workflows/build.yml/badge.svg)](https://github.com/EdgeFirstAI/replay/actions/workflows/build.yml)
+[![Test](https://github.com/EdgeFirstAI/replay/actions/workflows/test.yml/badge.svg)](https://github.com/EdgeFirstAI/replay/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![EdgeFirst](https://img.shields.io/badge/EdgeFirst-Perception-green)](https://doc.edgefirst.ai)
 
 MCAP replay utility for EdgeFirst edge AI platforms. Replays recorded sensor
 data through Zenoh messaging for development, testing, and demonstration.
