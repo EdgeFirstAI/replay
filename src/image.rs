@@ -15,12 +15,7 @@ use g2d_sys::{
 };
 use log::warn;
 use std::{
-    error::Error,
-    ffi::c_void,
-    io,
-    os::fd::AsRawFd,
-    ptr::null_mut,
-    slice::from_raw_parts_mut,
+    error::Error, ffi::c_void, io, os::fd::AsRawFd, ptr::null_mut, slice::from_raw_parts_mut,
 };
 use videostream::{encoder::VSLRect, fourcc::FourCC, frame::Frame};
 
