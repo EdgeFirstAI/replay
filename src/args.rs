@@ -9,26 +9,44 @@ use std::path::PathBuf;
 use tracing::level_filters::LevelFilter;
 use zenoh::{config::WhatAmI, key_expr::OwnedKeyExpr, Config};
 
+/// Command-line arguments for EdgeFirst Replay Node.
+///
+/// This structure defines all configuration options for the replay node,
+/// including MCAP file selection, playback control, Zenoh configuration,
+/// and debugging options. Arguments can be specified via command line or
+/// environment variables.
+///
+/// # Example
+///
+/// ```bash
+/// # Via command line
+/// edgefirst-replay recording.mcap --replay-speed 2.0
+///
+/// # Via environment variables
+/// export MCAP=/path/to/recording.mcap
+/// export REPLAY_SPEED=2.0
+/// edgefirst-replay
+/// ```
 #[derive(Debug, Clone, Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
-    /// path to the mcap file
-    #[arg(env, required = true)]
+    /// Path to the MCAP recording file to replay
+    #[arg(env = "MCAP", required = true)]
     pub mcap: PathBuf,
 
-    /// replay speed (must be greater than 0)
-    #[arg(short, long, env, default_value = "1.0", value_parser = parse_replay_speed)]
+    /// Replay speed multiplier (must be greater than 0)
+    #[arg(short, long, env = "REPLAY_SPEED", default_value = "1.0", value_parser = parse_replay_speed)]
     pub replay_speed: f64,
 
-    /// raw dma topic
+    /// Zenoh topic for raw DMA buffer metadata
     #[arg(long, default_value = "rt/camera/dma")]
     pub dma_topic: String,
 
-    /// list all topics
+    /// List all topics in the MCAP file and exit
     #[arg(short, long)]
     pub list: bool,
 
-    /// Replays the MCAP only once
+    /// Replay the MCAP file only once (no looping)
     #[arg(short, long)]
     pub one_shot: bool,
 
@@ -36,36 +54,36 @@ pub struct Args {
     #[arg(short, long)]
     pub system: bool,
 
-    /// topics to publish. If empty, will publish all topics
-    #[arg(short, long, env, value_delimiter = ' ', value_parser = parse_topics)]
+    /// Zenoh topics to publish (space-delimited; empty = publish all)
+    #[arg(short, long, env = "TOPICS", value_delimiter = ' ', value_parser = parse_topics)]
     pub topics: Vec<Option<OwnedKeyExpr>>,
 
-    /// topics to ignore
-    #[arg(short, long, env, required = false, value_delimiter = ' ', value_parser = parse_topics)]
+    /// Zenoh topics to ignore during replay (space-delimited)
+    #[arg(short, long, env = "IGNORE_TOPICS", required = false, value_delimiter = ' ', value_parser = parse_topics)]
     pub ignore_topics: Vec<Option<OwnedKeyExpr>>,
 
     /// Application log level
-    #[arg(long, env, default_value = "info")]
+    #[arg(long, env = "RUST_LOG", default_value = "info")]
     pub rust_log: LevelFilter,
 
     /// Enable Tracy profiler broadcast
-    #[arg(long, env)]
+    #[arg(long, env = "TRACY")]
     pub tracy: bool,
 
-    /// zenoh connection mode
-    #[arg(long, env, default_value = "peer")]
+    /// Zenoh participant mode (peer, client, or router)
+    #[arg(long, env = "MODE", default_value = "peer")]
     mode: WhatAmI,
 
-    /// connect to zenoh endpoints
-    #[arg(long, env)]
+    /// Zenoh endpoints to connect to (can specify multiple)
+    #[arg(long, env = "CONNECT")]
     connect: Vec<String>,
 
-    /// listen to zenoh endpoints
-    #[arg(long, env)]
+    /// Zenoh endpoints to listen on (can specify multiple)
+    #[arg(long, env = "LISTEN")]
     listen: Vec<String>,
 
-    /// disable zenoh multicast scouting
-    #[arg(long, env)]
+    /// Disable Zenoh multicast peer discovery
+    #[arg(long, env = "NO_MULTICAST_SCOUTING")]
     no_multicast_scouting: bool,
 }
 

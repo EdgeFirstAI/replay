@@ -1,0 +1,77 @@
+# EdgeFirst Replay Configuration
+#
+# This file is loaded by the systemd service as an EnvironmentFile. Every
+# variable here maps to a command-line flag of the same name (lower-case,
+# with dashes replaced by underscores). Command-line flags take precedence
+# over environment variables.
+#
+# Syntax rules (systemd EnvironmentFile):
+#   - Lines beginning with # or ; are comments.
+#   - KEY=VALUE pairs, one per line.
+#   - Quoting is optional; quotes are stripped by systemd.
+#   - No spaces around the '=' sign.
+
+# ---------------------------------------------------------------------------
+# MCAP Recording File
+# ---------------------------------------------------------------------------
+# Path to the MCAP recording file to replay. This is the only required
+# parameter. The file must exist and be a valid MCAP recording.
+MCAP=""
+
+# ---------------------------------------------------------------------------
+# Replay Speed
+# ---------------------------------------------------------------------------
+# Playback speed multiplier. Values greater than 1.0 speed up replay, values
+# between 0 and 1.0 slow it down. Must be greater than 0 and finite.
+# Examples: 0.5 = half speed, 1.0 = real-time, 2.0 = double speed.
+REPLAY_SPEED="1.0"
+
+# ---------------------------------------------------------------------------
+# Topic Selection
+# ---------------------------------------------------------------------------
+# Space-delimited list of Zenoh topics to publish from the recording.
+# When empty, all topics found in the MCAP file are published.
+# Topics starting with "/" are automatically prefixed with "rt".
+# Example: TOPICS="rt/camera/h264 rt/objectdetection/boxes"
+TOPICS=""
+
+# Space-delimited list of Zenoh topics to ignore during replay. Messages
+# on these topics will be skipped even if they appear in the recording.
+# Example: IGNORE_TOPICS="rt/camera/dma rt/camera/jpeg"
+IGNORE_TOPICS=""
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+# Application log level. Controls the verbosity of log output.
+# Accepted values: trace, debug, info, warn, error, off
+RUST_LOG="info"
+
+# ---------------------------------------------------------------------------
+# Zenoh Networking
+# ---------------------------------------------------------------------------
+# Zenoh participant mode. In "peer" mode nodes discover each other via
+# multicast. Use "client" to connect to a Zenoh router, or "router" to act
+# as one.
+# Accepted values: peer, client, router
+MODE="peer"
+
+# Zenoh endpoint(s) to connect to. Required when MODE is "client".
+# Example: CONNECT="tcp/192.168.1.1:7447"
+CONNECT=""
+
+# Zenoh endpoint(s) to listen on. Useful when running as a router or when
+# peers need to reach this node on a specific address/port.
+LISTEN=""
+
+# Disable Zenoh multicast scouting (peer auto-discovery). Set to true when
+# operating in networks where multicast is unavailable or undesired, and use
+# CONNECT/LISTEN for explicit endpoint configuration instead.
+NO_MULTICAST_SCOUTING="false"
+
+# ---------------------------------------------------------------------------
+# Debugging / Profiling
+# ---------------------------------------------------------------------------
+# Enable the Tracy profiler for real-time performance analysis. Requires the
+# binary to be built with Tracy support.
+TRACY="false"
