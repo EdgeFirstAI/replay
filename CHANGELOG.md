@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-02-26
+
+### Changed
+
+- Renamed environment variables to short explicit names (MCAP, REPLAY_SPEED, TOPICS, etc.)
+- Upload release binaries directly instead of zipping
+
+### Added
+
+- Complete `replay.default` configuration file for systemd EnvironmentFile usage
+- `replay.default` published as a release artifact with install instructions
+
 ## [2.1.0] - 2026-02-16
 
 ### Changed
