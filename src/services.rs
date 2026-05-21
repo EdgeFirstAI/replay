@@ -6,8 +6,7 @@
 use log::{debug, info, warn};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use tokio::process::Command;
-use tokio::task::JoinSet;
+use std::process::Command;
 pub struct ServiceHandler {
     service_map: HashMap<String, String>,
 }
@@ -25,7 +24,7 @@ impl ServiceHandler {
         ServiceHandler { service_map: map }
     }
 
-    pub fn stop_services<'a, I>(&self, topics: I) -> JoinSet<()>
+    pub fn stop_services<'a, I>(&self, topics: I)
     where
         I: IntoIterator<Item = &'a String>,
     {
@@ -38,11 +37,9 @@ impl ServiceHandler {
             }
             services.insert(service_name);
         }
-        let mut tasks = JoinSet::new();
         for service_name in services {
-            tasks.spawn(Self::stop_service(service_name));
+            Self::stop_service(service_name);
         }
-        tasks
     }
 
     fn topic_to_service(&self, topic: &str) -> String {
@@ -62,13 +59,12 @@ impl ServiceHandler {
         }
     }
 
-    async fn stop_service(service_name: String) {
+    fn stop_service(service_name: String) {
         debug!("Stopping service {}", service_name);
         let out = Command::new("systemctl")
             .arg("stop")
             .arg(&service_name)
-            .output()
-            .await;
+            .output();
         match out {
             Err(e) => warn!("Error when stopping service {}: {:?}", service_name, e),
             Ok(v) if !v.stderr.is_empty() => {

@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `rt/camera/dma` now publishes the decoder-native NV12 buffer,
+  matching the live camera wire contract. Replay no longer performs NV12→RGBA
+  conversion before publishing this topic. Downstream consumers that were
+  reading RGBA from `rt/camera/dma` should switch to `--camera-image-topic`
+  (sensor_msgs/Image, rgba8).
+- Bumped `edgefirst-schemas` 1.3.1 → 3.4.0 and adopted its zero-copy
+  view/builder API (`FoxgloveCompressedVideo::from_cdr`,
+  `CompressedImage::from_cdr`, `Image::builder().encode_into_vec(..)`,
+  `DmaBuffer::new(..).into_cdr()`).
+- Bumped `videostream` 2.1.4 → 2.5.1. Switched the h264 decoder construction
+  from the legacy `Decoder::create(H264, fps)` to
+  `Decoder::create_ex(H264, fps, CodecBackend::Auto)`; the legacy entrypoint
+  bypasses the v4l2 device enumeration the 2.5.x backend relies on, while
+  the `_ex` entry uses it. On imx8mp this routes to `/dev/video1 vsi_v4l2dec`
+  with a tighter natural NV12 stride (1920 bytes vs the Hantro path's 2880).
+- `decode_h264_msg` retries on transient decoder backpressure (V4L2 m2m OUTPUT
+  queue full): up to 20 attempts, 5 ms sleep between, retrying the same data.
+  Mirrors `~/Software/EdgeFirst/camera/src/replay.rs`. Without this, the very
+  first decode_frame call on a cold pool returns `Io("Decoder Error")` from
+  the C library and is otherwise treated as fatal.
+- `main` is now sync (no `#[tokio::main]`, no `tokio::time::sleep`, no
+  `tokio::process::Command`). The edgefirst-hal 0.23.1 GL backend calls
+  `tokio::sync::oneshot::Receiver::blocking_recv` during converter init,
+  which panics inside a tokio runtime; making `main` sync sidesteps the
+  collision. Service-handler invocations use `std::process::Command` and
+  the inter-frame timing loop uses `std::thread::sleep`.
+
+### Removed
+
+- NXP G2D (`g2d-sys`), `turbojpeg`, `dma-heap`, `tokio`, and the per-frame
+  `cdr` crate dependency. All image conversion, JPEG decoding, and CMA
+  allocation now go through `edgefirst-hal` 0.23.1.
+- `src/image.rs` (G2D surface helpers, CMA-heap `Image`, `MappedImage`).
+
+### Added
+
+- `--camera-image-topic` (env `CAMERA_IMAGE_TOPIC`) and `--camera-image-buffers`
+  (env `CAMERA_IMAGE_BUFFERS`, default 4) — opt-in `sensor_msgs/Image` RGBA
+  publisher for consumers that need a non-dma-buf-aware decoded image stream.
+  Backed by `edgefirst-hal` `ImageProcessor` (auto-selects G2D / OpenGL / CPU).
+  Source tensors cached by dma-buf inode; destination tensors pre-allocated
+  once and reused.
+- JPEG MCAP playback now uses the optimized `edgefirst-codec` JPEG decoder
+  (`peek_info` + `ImageLoad::load_image`), writing directly into pre-allocated
+  NV12 dma-buf tensors — no host-side intermediate, no memcpy.
+
 ## [2.2.0] - 2026-02-26
 
 ### Changed

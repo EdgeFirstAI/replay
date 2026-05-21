@@ -42,6 +42,17 @@ pub struct Args {
     #[arg(long, default_value = "rt/camera/dma")]
     pub dma_topic: String,
 
+    /// Zenoh topic for hal-decoded RGBA sensor_msgs/Image output (e.g.
+    /// `rt/camera/image`). Empty disables this side channel; the camera-native
+    /// NV12 DmaBuffer publish on `--dma-topic` is unaffected.
+    #[arg(long, env = "CAMERA_IMAGE_TOPIC", default_value = "")]
+    pub camera_image_topic: String,
+
+    /// Number of RGBA destination buffers pre-allocated for the hal image
+    /// path. Ignored when --camera-image-topic is empty.
+    #[arg(long, env = "CAMERA_IMAGE_BUFFERS", default_value = "4")]
+    pub camera_image_buffers: usize,
+
     /// List all topics in the MCAP file and exit
     #[arg(short, long)]
     pub list: bool,
