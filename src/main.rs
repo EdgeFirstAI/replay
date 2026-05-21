@@ -475,10 +475,7 @@ fn publish_frame_dma(
     let height = frame.height()? as u32;
     let stride = frame.stride()? as u32;
     let fourcc = frame.fourcc()?;
-    // NV12 buffer length: stride * height * 3 / 2. With `stride == width`
-    // (the common case) this is the natural NV12 size; with non-tight stride
-    // the receiver still gets a contiguous buffer to mmap.
-    let length = (stride as u64 * height as u64 * 3 / 2) as u32;
+    let length = dma_buffer_length(fourcc, stride, height)?;
 
     publish_dma_buffer(
         stamp, frame_id, pid, fd, width, height, stride, fourcc, length, topic, session,
@@ -502,7 +499,7 @@ fn publish_tensor_dma(
         .effective_row_stride()
         .map(|s| s as u32)
         .unwrap_or(width);
-    let length = (stride as u64 * height as u64 * 3 / 2) as u32;
+    let length = dma_buffer_length(NV12_FOURCC, stride, height)?;
 
     publish_dma_buffer(
         stamp,
@@ -517,6 +514,31 @@ fn publish_tensor_dma(
         topic,
         session,
     )
+}
+
+/// Total dma-buf byte length for a decoder-/camera-native frame layout.
+///
+/// `stride` is the row stride in bytes for the primary (luma) plane, exactly
+/// as carried in the `DmaBuffer` schema. Returns an error for fourcc values
+/// the camera/dma contract doesn't define, since the receiver wouldn't know
+/// how to size its mmap.
+fn dma_buffer_length(fourcc: u32, stride: u32, height: u32) -> Result<u32, Box<dyn Error>> {
+    let stride = stride as u64;
+    let height = height as u64;
+    let bytes: u64 = match &fourcc.to_le_bytes() {
+        // NV12: stride*height (Y plane) + stride*height/2 (interleaved UV).
+        b"NV12" => stride * height * 3 / 2,
+        // YUYV: packed 4:2:2, 2 bytes per pixel — stride already accounts.
+        b"YUYV" => stride * height,
+        other => {
+            return Err(format!(
+                "unsupported camera/dma fourcc {:?} for length computation",
+                String::from_utf8_lossy(other)
+            )
+            .into())
+        }
+    };
+    Ok(bytes as u32)
 }
 
 #[allow(clippy::too_many_arguments, deprecated)]

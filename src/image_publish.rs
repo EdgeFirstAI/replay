@@ -10,7 +10,7 @@
 use edgefirst_hal::image::{Crop, Flip, ImageProcessor, ImageProcessorTrait, Rect, Rotation};
 use edgefirst_hal::tensor::{DType, PixelFormat, TensorDyn, TensorMapTrait, TensorTrait};
 use edgefirst_schemas::{builtin_interfaces::Time, sensor_msgs::Image};
-use log::{debug, error, info};
+use log::{debug, info};
 use nix::sys::stat::fstat;
 use std::{
     collections::{hash_map::Entry, HashMap},
@@ -302,10 +302,12 @@ fn ensure_ready<'a>(
     }
     let ready = state.as_mut().expect("just initialised");
     if ready.visible_width != visible_width || ready.visible_height != visible_height {
-        error!(
-            "hal publisher dims changed {}x{} -> {}x{}; ignoring",
+        return Err(format!(
+            "hal publisher dims changed {}x{} -> {}x{}; skipping publish \
+             (dst ring sized for the original dimensions)",
             ready.visible_width, ready.visible_height, visible_width, visible_height
-        );
+        )
+        .into());
     }
     Ok(ready)
 }

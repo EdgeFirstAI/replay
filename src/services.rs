@@ -70,9 +70,11 @@ impl ServiceHandler {
             Ok(v) if !v.stderr.is_empty() => {
                 warn!("Output when stopping service {}: {:?}", service_name, v)
             }
-            Ok(v) => debug!("Output when stopping service {}: {:?}", service_name, v),
+            Ok(v) => {
+                debug!("Output when stopping service {}: {:?}", service_name, v);
+                info!("Stopped service {}", service_name);
+            }
         }
-        info!("Stopped service {}", service_name);
     }
 }
 
