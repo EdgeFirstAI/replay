@@ -1,142 +1,161 @@
 // Copyright 2025 Au-Zone Technologies Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! H.264 and JPEG video decoding with hardware-accelerated color conversion.
+//! H.264 (VPU) and JPEG (hal codec) decoders for the replay pipeline.
+//!
+//! H.264 frames are surfaced directly as `videostream::Frame` — the caller
+//! publishes the decoder-native NV12 buffer to `rt/camera/dma` and optionally
+//! converts to RGBA via the hal `ImageProcessor` for `rt/camera/image`.
+//!
+//! JPEG frames are decoded by `edgefirst_codec::ImageDecoder` directly into
+//! a pre-allocated NV12 dma-buf tensor ring — no host-side intermediate,
+//! no memcpy.
 
-use crate::image::{convert_frame, Image, MappedImage, RGBA};
-use g2d_sys::G2D;
-use log::{error, info, trace};
-use std::{error::Error, io};
-use turbojpeg::image::RgbaImage;
-use videostream::decoder::{DecodeReturnCode, Decoder, DecoderCodec};
+use edgefirst_codec::{peek_info, DecodeOptions, ImageDecoder, ImageLoad};
+use edgefirst_hal::image::ImageProcessor;
+use edgefirst_hal::tensor::{DType, PixelFormat, TensorDyn};
+use log::{info, trace, warn};
+use std::{error::Error, thread::sleep, time::Duration};
+use videostream::decoder::{CodecBackend, DecodeReturnCode, Decoder, DecoderCodec};
+use videostream::encoder::VSLRect;
+use videostream::frame::Frame;
 
-const BUF_COUNT: usize = 4;
+const JPEG_RING_DEPTH: usize = 4;
 
 pub struct VideoDecoder {
     decoder: Decoder,
-    frames: Vec<Image>,
-    mappings: Vec<MappedImage>,
     last_data: Vec<u8>,
+    visible_logged: bool,
     pub frame_count: usize,
 }
 
 impl VideoDecoder {
     pub fn new() -> Result<Self, Box<dyn Error>> {
+        // Use the explicit Auto-backend constructor. The legacy `create()`
+        // goes through the older `vsl_decoder_create` C entry which doesn't
+        // run the v4l2 device enumeration the 2.5.x stack relies on; the
+        // `_ex` entry does.
         Ok(VideoDecoder {
-            decoder: Decoder::create(DecoderCodec::H264, 30)?,
-            frames: Vec::new(),
-            mappings: Vec::new(),
+            decoder: Decoder::create_ex(DecoderCodec::H264, 30, CodecBackend::Auto)?,
             last_data: Vec::new(),
+            visible_logged: false,
             frame_count: 0,
         })
     }
 
-    fn allocate(&mut self) -> Result<(), Box<dyn Error>> {
-        let crop = self.decoder.crop()?;
-        info!("Video dimensions are: {}x{}", crop.width(), crop.height());
-        for _ in 0..BUF_COUNT {
-            trace!("Allocating frame");
-            let image = Image::new(crop.width() as u32, crop.height() as u32, RGBA)?;
-            self.frames.push(image);
-            trace!("Done allocating frame");
-        }
-        Ok(())
+    /// Visible (post-crop) frame rectangle as reported by the H264 decoder.
+    /// Only valid after the first frame has decoded.
+    pub fn crop(&self) -> Result<VSLRect, Box<dyn Error>> {
+        Ok(self.decoder.crop()?)
     }
 
-    fn allocate_jpeg(&mut self, width: u32, height: u32) -> Result<(), Box<dyn Error>> {
-        for _ in 0..BUF_COUNT {
-            trace!("Allocating JPEG frame");
-            let image = Image::new(width, height, RGBA)?;
-            let mapping = image.mmap()?;
-            self.mappings.push(mapping);
-            self.frames.push(image);
-            trace!("Done allocating JPEG frame");
-        }
-        Ok(())
-    }
+    /// Decode one H264 message and return the next NV12 frame, if any.
+    ///
+    /// The returned `Frame` borrows a slot from the VPU pool — keep it alive
+    /// across the publish call(s) so the receiver can still open its fd.
+    ///
+    /// `decode_frame` is transiently fallible: the V4L2 m2m OUTPUT queue
+    /// can be momentarily full and the backend returns an `Io("Decoder Error")`
+    /// until a slot frees up. We retry the same data on error, sleeping
+    /// briefly between attempts, matching the camera-service replay pattern.
+    pub fn decode_h264_msg(&mut self, data: &[u8]) -> Result<Option<Frame>, Box<dyn Error>> {
+        const MAX_RETRIES: usize = 20;
+        const RETRY_SLEEP: Duration = Duration::from_millis(5);
 
-    pub fn decode_h264_msg(
-        &mut self,
-        data: &[u8],
-        g2d: &G2D,
-    ) -> Result<Option<&Image>, Box<dyn Error>> {
-        let total_len = data.len();
+        self.last_data.extend_from_slice(data);
         let mut consumed = 0;
-        self.last_data.extend_from_slice(data);
+        let mut retries = 0;
 
-        for _ in 0..3 {
-            let (ret, bytes, frame) = match self.decoder.decode_frame(&self.last_data[consumed..]) {
-                Ok(v) => v,
+        while consumed < self.last_data.len() {
+            let slice = &self.last_data[consumed..];
+            match self.decoder.decode_frame(slice) {
+                Ok((ret, used, frame)) => {
+                    consumed += used;
+                    retries = 0;
+                    trace!(
+                        "decode_frame consumed {used} ({consumed}/{})",
+                        self.last_data.len()
+                    );
+
+                    if ret == DecodeReturnCode::Initialized && !self.visible_logged {
+                        let crop = self.decoder.crop()?;
+                        info!("Video dimensions are: {}x{}", crop.width(), crop.height());
+                        self.visible_logged = true;
+                    }
+
+                    if let Some(f) = frame {
+                        self.frame_count += 1;
+                        self.last_data.drain(..consumed);
+                        return Ok(Some(f));
+                    }
+
+                    if used == 0 {
+                        // No frame and no progress — need more input.
+                        break;
+                    }
+                }
                 Err(e) => {
-                    error!("Could not decode frame: {:?}", e);
-                    return Err(Box::new(e));
+                    retries += 1;
+                    if retries > MAX_RETRIES {
+                        warn!("Persistent decoder error after {retries} retries: {e:?}");
+                        self.last_data.drain(..consumed);
+                        return Err(Box::new(e));
+                    }
+                    sleep(RETRY_SLEEP);
                 }
-            };
-            trace!(
-                "Consumed a total of {} out of {}",
-                consumed + bytes,
-                data.len()
-            );
-            if ret == DecodeReturnCode::Initialized {
-                self.allocate()?;
             }
-            if let Some(f) = frame {
-                let index = self.frame_count % BUF_COUNT;
-                if self.frames.is_empty() {
-                    return Ok(None);
-                }
-                let crop_rect = self.decoder.crop()?.into();
-                convert_frame(g2d, &f, &self.frames[index], Some(&crop_rect))?;
-                self.frame_count += 1;
-                self.last_data.clear();
-                self.last_data.extend_from_slice(data);
-                return Ok(Some(&self.frames[index]));
-            }
-            consumed += bytes;
         }
 
-        self.last_data.clear();
-        self.last_data.extend_from_slice(data);
-        if consumed >= total_len {
-            Ok(None)
-        } else {
-            Err(Box::new(io::Error::other("Could not decode video")))
-        }
+        self.last_data.drain(..consumed);
+        Ok(None)
+    }
+}
+
+/// Hal-backed JPEG stream: decodes JPEGs directly into a ring of NV12
+/// dma-buf tensors so the published fd is the same one the codec wrote into.
+pub struct JpegStream {
+    processor: ImageProcessor,
+    decoder: ImageDecoder,
+    dst_ring: Vec<TensorDyn>,
+    next_dst: usize,
+}
+
+impl JpegStream {
+    pub fn new() -> Result<Self, Box<dyn Error>> {
+        Ok(Self {
+            processor: ImageProcessor::new()?,
+            decoder: ImageDecoder::new(),
+            dst_ring: Vec::new(),
+            next_dst: 0,
+        })
     }
 
-    pub fn decode_jpeg_msg(&mut self, data: &[u8]) -> Result<Option<&Image>, Box<dyn Error>> {
-        let jpeg: RgbaImage = match turbojpeg::decompress_image(data) {
-            Ok(v) => v,
-            Err(e) => {
-                error!("Could not decode frame: {:?}", e);
-                return Err(Box::new(e));
-            }
-        };
+    /// Decode one JPEG message into the next NV12 dma-buf tensor slot and
+    /// return a reference to it.
+    pub fn decode(&mut self, data: &[u8]) -> Result<&TensorDyn, Box<dyn Error>> {
+        let opts = DecodeOptions::default().with_format(PixelFormat::Nv12);
 
-        if self.frames.is_empty() {
-            self.allocate_jpeg(jpeg.width(), jpeg.height())?;
-        }
-
-        let index = self.frame_count % BUF_COUNT;
-        let frame_size = self.frames[index].size();
-        let jpeg_size = jpeg.as_raw().len();
-
-        if jpeg_size < frame_size {
-            error!(
-                "JPEG buffer size ({}) is smaller than frame size ({})",
-                jpeg_size, frame_size
+        if self.dst_ring.is_empty() {
+            let info = peek_info(data, &opts)?;
+            info!(
+                "JPEG dimensions are: {}x{} (decoding to NV12)",
+                info.width, info.height
             );
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "JPEG buffer too small for frame",
-            )));
+            for _ in 0..JPEG_RING_DEPTH {
+                let t = self.processor.create_image(
+                    info.width,
+                    info.height,
+                    PixelFormat::Nv12,
+                    DType::U8,
+                    None,
+                )?;
+                self.dst_ring.push(t);
+            }
         }
 
-        // Use the persistent mmap for this frame buffer
-        let mapping = &mut self.mappings[index];
-        mapping.as_slice_mut()[..frame_size].copy_from_slice(&jpeg.as_raw()[..frame_size]);
-
-        self.frame_count += 1;
-        Ok(Some(&self.frames[index]))
+        let idx = self.next_dst;
+        self.next_dst = (self.next_dst + 1) % self.dst_ring.len();
+        self.dst_ring[idx].load_image(&mut self.decoder, data, &opts)?;
+        Ok(&self.dst_ring[idx])
     }
 }
