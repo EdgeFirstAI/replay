@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-05-22
+
 ### Changed
 
 - **Breaking:** `rt/camera/dma` now publishes the decoder-native NV12 buffer,
@@ -18,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   view/builder API (`FoxgloveCompressedVideo::from_cdr`,
   `CompressedImage::from_cdr`, `Image::builder().encode_into_vec(..)`,
   `DmaBuffer::new(..).into_cdr()`).
-- Bumped `videostream` 2.1.4 → 2.5.1. Switched the h264 decoder construction
+- Upgraded `videostream` to 2.5.2. Switched the h264 decoder construction
   from the legacy `Decoder::create(H264, fps)` to
   `Decoder::create_ex(H264, fps, CodecBackend::Auto)`; the legacy entrypoint
   bypasses the v4l2 device enumeration the 2.5.x backend relies on, while
