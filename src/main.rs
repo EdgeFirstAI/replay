@@ -198,6 +198,29 @@ fn main() {
         ))
     };
 
+    info!("Publishing topics: {:?}", topics);
+    info!("Ignoring topics: {:?}", ignore_topics);
+
+    let topics_to_publish: HashSet<_> = get_topics(&mapped)
+        .into_iter()
+        .filter(|t| filter_topic(&topics, &ignore_topics, t))
+        .collect();
+    info!(
+        "Found the following topics to publish: {:#?}",
+        topics_to_publish
+    );
+
+    let service_handler = ServiceHandler::new();
+    if args.system {
+        info!("Stopping system services before replay");
+        service_handler.stop_services(&topics_to_publish);
+    } else {
+        info!("Keeping system services running");
+    }
+
+    let session = zenoh::open(args.clone()).wait().unwrap();
+    let src_pid = process::id();
+
     loop {
         let msg_stream = match mcap::MessageStream::new(&mapped) {
             Ok(v) => v,
@@ -207,29 +230,8 @@ fn main() {
             }
         };
         info!("Parsed MCAP file {:?}", args.mcap);
-        let src_pid = process::id();
 
         let mut has_h264 = false;
-
-        info!("Publishing topics: {:?}", topics);
-        info!("Ignoring topics: {:?}", ignore_topics);
-
-        let topics_to_publish: HashSet<_> = get_topics(&mapped)
-            .into_iter()
-            .filter(|t| filter_topic(&topics, &ignore_topics, t))
-            .collect();
-        info!(
-            "Found the following topics to publish: {:#?}",
-            topics_to_publish
-        );
-
-        let service_handler = ServiceHandler::new();
-        if args.system {
-            info!("Stopping system services before replay");
-            service_handler.stop_services(&topics_to_publish);
-        } else {
-            info!("Keeping system services running");
-        }
 
         let msg_stream = msg_stream.filter(|message| {
             let message = match message {
@@ -241,8 +243,6 @@ fn main() {
             };
             topics_to_publish.contains(&message.channel.topic)
         });
-
-        let session = zenoh::open(args.clone()).wait().unwrap();
 
         let mut first_msg_time = INIT_TIME_VAL;
         let mut start = Instant::now();
