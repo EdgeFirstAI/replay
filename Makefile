@@ -47,11 +47,15 @@ clean:
 verify-version:
 	@echo "Checking version consistency..."
 	@VERSION=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/'); \
-	G2D_VERSION=$$(grep '^version' g2d-sys/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/'); \
-	echo "Main version: $$VERSION"; \
-	echo "g2d-sys version: $$G2D_VERSION"; \
-	if [ "$$VERSION" != "$$G2D_VERSION" ]; then \
-		echo "ERROR: Version mismatch between Cargo.toml and g2d-sys/Cargo.toml"; \
+	LOCK_VERSION=$$(awk '/^name = "edgefirst-replay"$$/ {found=1} found && /^version = / {gsub(/version = "|"/, ""); print; exit}' Cargo.lock); \
+	echo "Cargo.toml version: $$VERSION"; \
+	echo "Cargo.lock version: $$LOCK_VERSION"; \
+	if [ -z "$$VERSION" ] || [ -z "$$LOCK_VERSION" ]; then \
+		echo "ERROR: Could not read version from Cargo.toml or Cargo.lock"; \
+		exit 1; \
+	fi; \
+	if [ "$$VERSION" != "$$LOCK_VERSION" ]; then \
+		echo "ERROR: Version mismatch between Cargo.toml ($$VERSION) and Cargo.lock ($$LOCK_VERSION)"; \
 		exit 1; \
 	fi
 	@echo "Version check passed!"
