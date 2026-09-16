@@ -1,0 +1,214 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 Au-Zone Technologies Inc.
+#
+# GitHub Actions workflow for publishing releases.
+#
+# This workflow publishes release artifacts when a version tag is pushed.
+# It does NOT rebuild artifacts — instead it waits for the build.yml and
+# sbom.yml workflows (triggered by the same commit on main) to complete,
+# then downloads their artifacts for the GitHub Release.
+#
+# Release Process:
+# 1. Update version in Cargo.toml, run cargo check to update Cargo.lock
+# 2. Commit and push to main
+# 3. Tag: git tag -a -s vX.Y.Z -m "Version X.Y.Z" && git push origin vX.Y.Z
+#
+# This workflow then:
+# - Waits for build.yml and sbom.yml to complete
+# - Downloads pre-built artifacts (binaries, SBOM)
+# - Creates GitHub Release with changelog and all artifacts
+#
+# Action Versions (hash-pinned):
+# - actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 (v6.0.1)
+# - lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc (v1.3.4)
+# - dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 (v6)
+# - softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b (v2.5.0)
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  # ==========================================================================
+  # Prepare Release Information
+  # ==========================================================================
+  prepare-release:
+    name: Prepare Release Information
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      changelog: ${{ steps.changelog.outputs.changelog }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
+
+      - name: Extract changelog for this version
+        id: changelog
+        env:
+          TAG_VERSION: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG_VERSION#v}"
+
+          CHANGELOG=$(awk -v ver="$VERSION" '
+            /^## \['"$VERSION"'\]/ { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md)
+
+          if [ -z "$CHANGELOG" ]; then
+            echo "WARNING: No changelog entry found for version $VERSION"
+            CHANGELOG="No changelog entry for this version."
+          fi
+
+          echo "$CHANGELOG" > /tmp/changelog.txt
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "Extracted changelog:"
+          cat /tmp/changelog.txt
+
+  # ==========================================================================
+  # Wait for CI Workflows to Complete
+  # ==========================================================================
+  wait-for-ci:
+    name: Wait for CI Workflows
+    needs: [prepare-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Build workflow
+        uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          check-regexp: '^build \('
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 10
+
+      - name: Wait for SBOM workflow
+        uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          check-name: 'Generate Software Bill of Materials'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 10
+
+  # ==========================================================================
+  # Create GitHub Release with pre-built artifacts
+  # ==========================================================================
+  create-github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [prepare-release, wait-for-ci]
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Download x86_64 artifact
+        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
+        with:
+          workflow: build.yml
+          commit: ${{ github.sha }}
+          name: edgefirst-replay-linux-x86_64
+          path: artifacts/x86_64
+
+      - name: Download aarch64 artifact
+        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
+        with:
+          workflow: build.yml
+          commit: ${{ github.sha }}
+          name: edgefirst-replay-linux-aarch64
+          path: artifacts/aarch64
+
+      - name: Download SBOM
+        uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11 # v6
+        with:
+          workflow: sbom.yml
+          commit: ${{ github.sha }}
+          name: sbom
+          path: artifacts/sbom
+
+      - name: Prepare release assets
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          mkdir -p release-assets
+
+          chmod +x artifacts/x86_64/edgefirst-replay
+          chmod +x artifacts/aarch64/edgefirst-replay
+
+          cp artifacts/x86_64/edgefirst-replay "release-assets/edgefirst-replay-${VERSION}-linux-x86_64"
+          cp artifacts/aarch64/edgefirst-replay "release-assets/edgefirst-replay-${VERSION}-linux-aarch64"
+
+          # SBOM (cargo-cyclonedx produces *.cdx.json)
+          SBOM_FILE=$(find artifacts/sbom -name "*.cdx.json" -type f 2>/dev/null | head -1)
+          if [ -n "$SBOM_FILE" ] && [ -f "$SBOM_FILE" ]; then
+            cp "$SBOM_FILE" "release-assets/edgefirst-replay-${VERSION}-sbom.json"
+            echo "SBOM: $SBOM_FILE"
+          else
+            echo "ERROR: SBOM file not found"
+            exit 1
+          fi
+
+          # Copy default configuration file
+          cp replay.default release-assets/replay.default
+
+          echo ""
+          echo "Release assets prepared:"
+          ls -lh release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
+        with:
+          name: EdgeFirst Replay v${{ needs.prepare-release.outputs.version }}
+          body: |
+            # EdgeFirst Replay v${{ needs.prepare-release.outputs.version }}
+
+            ## Installation
+
+            ### Download Binaries
+
+            | Platform | Binary |
+            |----------|--------|
+            | Linux x86_64 | `edgefirst-replay-${{ needs.prepare-release.outputs.version }}-linux-x86_64` |
+            | Linux ARM64 | `edgefirst-replay-${{ needs.prepare-release.outputs.version }}-linux-aarch64` |
+            | Configuration | `replay.default` |
+
+            ```bash
+            # Download and install (ARM64 example)
+            wget https://github.com/EdgeFirstAI/replay/releases/download/v${{ needs.prepare-release.outputs.version }}/edgefirst-replay-${{ needs.prepare-release.outputs.version }}-linux-aarch64
+            chmod +x edgefirst-replay-${{ needs.prepare-release.outputs.version }}-linux-aarch64
+            sudo mv edgefirst-replay-${{ needs.prepare-release.outputs.version }}-linux-aarch64 /usr/local/bin/edgefirst-replay
+
+            # Install default configuration (optional)
+            sudo cp replay.default /etc/default/replay
+            ```
+
+            ## What's Changed
+
+            ${{ needs.prepare-release.outputs.changelog }}
+
+            ---
+
+            **Full Documentation**: https://github.com/EdgeFirstAI/replay#readme
+          files: |
+            release-assets/*
+          draft: false
+          prerelease: ${{ contains(needs.prepare-release.outputs.version, '-') }}
+          fail_on_unmatched_files: true

@@ -52,3 +52,6 @@ audit.json
 sonar-issues.json
 
 .vscode/
+
+docs/plans
+

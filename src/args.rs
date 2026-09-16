@@ -1,38 +1,63 @@
+// Copyright 2025 Au-Zone Technologies Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+//! CLI argument parsing and Zenoh configuration.
+
 use clap::Parser;
 use serde_json::json;
 use std::path::PathBuf;
 use tracing::level_filters::LevelFilter;
 use zenoh::{config::WhatAmI, key_expr::OwnedKeyExpr, Config};
 
-#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Copy)]
-pub enum LabelSetting {
-    Index,
-    Label,
-    Score,
-    LabelScore,
-    Track,
-}
-
+/// Command-line arguments for EdgeFirst Replay Node.
+///
+/// This structure defines all configuration options for the replay node,
+/// including MCAP file selection, playback control, Zenoh configuration,
+/// and debugging options. Arguments can be specified via command line or
+/// environment variables.
+///
+/// # Example
+///
+/// ```bash
+/// # Via command line
+/// edgefirst-replay recording.mcap --replay-speed 2.0
+///
+/// # Via environment variables
+/// export MCAP=/path/to/recording.mcap
+/// export REPLAY_SPEED=2.0
+/// edgefirst-replay
+/// ```
 #[derive(Debug, Clone, Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
-    /// path to the mcap file
-    #[arg(env, required = true)]
+    /// Path to the MCAP recording file to replay
+    #[arg(env = "MCAP", required = true)]
     pub mcap: PathBuf,
 
-    /// replay speed
-    #[arg(short, long, env, default_value = "1.0")]
+    /// Replay speed multiplier (must be greater than 0)
+    #[arg(short, long, env = "REPLAY_SPEED", default_value = "1.0", value_parser = parse_replay_speed)]
     pub replay_speed: f64,
 
-    /// CameraFrame topic for decoded frames
+    /// Zenoh topic for synthesized CameraFrame (decoder-native NV12 dma-buf)
     #[arg(long, default_value = "rt/camera/frame")]
     pub dma_topic: String,
 
-    /// list all topics
+    /// Zenoh topic for hal-decoded RGBA sensor_msgs/Image output (e.g.
+    /// `rt/camera/image`). Empty disables this side channel; the camera-native
+    /// CameraFrame publish on `--dma-topic` is unaffected.
+    #[arg(long, env = "CAMERA_IMAGE_TOPIC", default_value = "")]
+    pub camera_image_topic: String,
+
+    /// Number of RGBA destination buffers pre-allocated for the hal image
+    /// path. Ignored when --camera-image-topic is empty.
+    #[arg(long, env = "CAMERA_IMAGE_BUFFERS", default_value = "4")]
+    pub camera_image_buffers: usize,
+
+    /// List all topics in the MCAP file and exit
     #[arg(short, long)]
     pub list: bool,
 
-    /// Replays the MCAP only once
+    /// Replay the MCAP file only once (no looping)
     #[arg(short, long)]
     pub one_shot: bool,
 
@@ -40,37 +65,50 @@ pub struct Args {
     #[arg(short, long)]
     pub system: bool,
 
-    /// topics to publish. If empty, will publish all topics
-    #[arg(short, long, env, value_delimiter = ' ', value_parser = parse_topics)]
+    /// Zenoh topics to publish (space-delimited; empty = publish all)
+    #[arg(short, long, env = "TOPICS", value_delimiter = ' ', value_parser = parse_topics)]
     pub topics: Vec<Option<OwnedKeyExpr>>,
 
-    /// topics to ignore
-    #[arg(short, long, env, required = false, value_delimiter = ' ', value_parser = parse_topics)]
+    /// Zenoh topics to ignore during replay (space-delimited)
+    #[arg(short, long, env = "IGNORE_TOPICS", required = false, value_delimiter = ' ', value_parser = parse_topics)]
     pub ignore_topics: Vec<Option<OwnedKeyExpr>>,
 
     /// Application log level
-    #[arg(long, env, default_value = "info")]
+    #[arg(long, env = "RUST_LOG", default_value = "info")]
     pub rust_log: LevelFilter,
 
     /// Enable Tracy profiler broadcast
-    #[arg(long, env)]
+    #[arg(long, env = "TRACY")]
     pub tracy: bool,
 
-    /// zenoh connection mode
-    #[arg(long, env, default_value = "peer")]
+    /// Zenoh participant mode (peer, client, or router)
+    #[arg(long, env = "MODE", default_value = "peer")]
     mode: WhatAmI,
 
-    /// connect to zenoh endpoints
-    #[arg(long, env)]
+    /// Zenoh endpoints to connect to (can specify multiple)
+    #[arg(long, env = "CONNECT")]
     connect: Vec<String>,
 
-    /// listen to zenoh endpoints
-    #[arg(long, env)]
+    /// Zenoh endpoints to listen on (can specify multiple)
+    #[arg(long, env = "LISTEN")]
     listen: Vec<String>,
 
-    /// disable zenoh multicast scouting
-    #[arg(long, env)]
+    /// Disable Zenoh multicast peer discovery
+    #[arg(long, env = "NO_MULTICAST_SCOUTING")]
     no_multicast_scouting: bool,
+}
+
+fn parse_replay_speed(s: &str) -> Result<f64, String> {
+    let speed: f64 = s
+        .parse()
+        .map_err(|_| format!("'{s}' is not a valid number"))?;
+    if speed <= 0.0 {
+        return Err("replay speed must be greater than 0".to_string());
+    }
+    if !speed.is_finite() {
+        return Err("replay speed must be a finite number".to_string());
+    }
+    Ok(speed)
 }
 
 // Parse into Ok(None) when the topic string is empty. This covers the edge case
@@ -79,11 +117,11 @@ fn parse_topics(topics: &str) -> Result<Option<OwnedKeyExpr>, String> {
     if topics.is_empty() {
         return Ok(None);
     }
-    let mut _topics = topics.to_owned();
-    if _topics.starts_with("/") {
-        _topics = "rt".to_owned() + &_topics;
+    let mut topic = topics.to_owned();
+    if topic.starts_with("/") {
+        topic = "rt".to_owned() + &topic;
     }
-    match OwnedKeyExpr::autocanonize(_topics) {
+    match OwnedKeyExpr::autocanonize(topic) {
         Ok(v) => Ok(Some(v)),
         Err(_) => Err(format!("Could not parse topic: {topics}")),
     }
