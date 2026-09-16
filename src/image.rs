@@ -38,10 +38,10 @@ pub struct Rect {
 impl From<VSLRect> for Rect {
     fn from(value: VSLRect) -> Self {
         Rect {
-            x: value.get_x(),
-            y: value.get_y(),
-            width: value.get_width(),
-            height: value.get_height(),
+            x: value.x(),
+            y: value.y(),
+            width: value.width(),
+            height: value.height(),
         }
     }
 }
@@ -124,13 +124,10 @@ impl ImageManager {
         width: i32,
         height: i32,
         channels: i32,
-    ) -> Result<G2DBuffer, Box<dyn Error>> {
+    ) -> Result<G2DBuffer<'_>, Box<dyn Error>> {
         let g2d_buf = unsafe { self.lib.g2d_alloc(width * height * channels, 0) };
         if g2d_buf.is_null() {
-            return Err(Box::new(io::Error::new(
-                io::ErrorKind::Other,
-                "g2d_alloc failed",
-            )));
+            return Err(Box::new(io::Error::other("g2d_alloc failed")));
         }
         debug!("G2D Buffer alloc'd");
         Ok(G2DBuffer {
@@ -267,7 +264,7 @@ impl ImageManager {
         to: &Image,
         crop: &Option<Rect>,
     ) -> Result<(), Box<dyn Error>> {
-        let mut src: g2d_surface = from.into();
+        let mut src: g2d_surface = from.try_into()?;
 
         if let Some(r) = crop {
             src.left = r.x;
@@ -301,7 +298,7 @@ impl ImageManager {
         to: &Image,
         crop: &Option<Rect>,
     ) -> Result<(), Box<dyn Error>> {
-        let mut src: g2d_surface_new = from.into();
+        let mut src: g2d_surface_new = from.try_into()?;
 
         if let Some(r) = crop {
             src.left = r.x;
@@ -429,6 +426,10 @@ impl Image {
         format_row_stride(self.format, self.width) * self.height as usize
     }
 
+    pub fn stride(&self) -> u32 {
+        format_row_stride(self.format, self.width) as u32
+    }
+
     pub fn mmap(&mut self) -> MappedImage {
         let image_size = image_size(self.width, self.height, self.format);
         unsafe {
@@ -460,7 +461,7 @@ impl TryFrom<&Image> for Frame {
         )?;
         match frame.attach(img.fd().as_raw_fd(), 0, 0) {
             Ok(_) => (),
-            Err(e) => return Err(e),
+            Err(e) => return Err(Box::new(e)),
         }
         Ok(frame)
     }

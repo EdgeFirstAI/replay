@@ -4,14 +4,15 @@ mod services;
 mod video_decode;
 
 use args::Args;
-use cdr::{CdrLe, Infinite};
 use clap::Parser;
 use edgefirst_schemas::{
-    edgefirst_msgs::DmaBuf, foxglove_msgs::FoxgloveCompressedVideo, sensor_msgs::CompressedImage,
-    std_msgs::Header,
+    builtin_interfaces::Time,
+    edgefirst_msgs::{CameraFrame, TensorFields, TensorPlaneView},
+    foxglove_msgs::FoxgloveCompressedVideo,
+    sensor_msgs::CompressedImage,
 };
 use image::{Image, ImageManager};
-use log::{error, info, trace};
+use log::{debug, error, info, warn};
 use mcap::Message;
 use memmap2::Mmap;
 use services::ServiceHandler;
@@ -51,9 +52,7 @@ fn map_mcap<P: AsRef<Path>>(p: P) -> Result<Mmap, String> {
 fn get_topics(mapped: &Mmap) -> HashSet<String> {
     let mut topics = HashSet::new();
 
-    let summary = mcap::Summary::read(mapped);
-    if summary.is_ok() && summary.as_ref().unwrap().is_some() {
-        let summary = summary.unwrap().unwrap();
+    if let Ok(Some(summary)) = mcap::Summary::read(mapped) {
         for c in summary.channels.values() {
             let topic = c.topic.clone();
             topics.insert(topic);
@@ -119,6 +118,19 @@ pub fn remove_none(topics: Vec<Option<OwnedKeyExpr>>) -> Vec<OwnedKeyExpr> {
 }
 
 const INIT_TIME_VAL: u64 = 0;
+const SCHEMA_DMA_BUFFER: &str = "edgefirst_msgs/msg/DmaBuffer";
+const SCHEMA_CAMERA_FRAME: &str = "edgefirst_msgs/msg/CameraFrame";
+/// DMA-backed tensor storage. The schema carries the value without interpreting it.
+const TENSOR_STORAGE_DMA: u32 = 2;
+const TENSOR_DTYPE_U8: u32 = 1;
+
+struct FrameSink<'a> {
+    src_pid: u32,
+    frame_seq: &'a mut u64,
+    frame_cdr: &'a mut Vec<u8>,
+    args: &'a Args,
+    session: &'a Session,
+}
 
 #[tokio::main]
 async fn main() {
@@ -234,16 +246,21 @@ async fn main() {
         let mut start = Instant::now();
 
         let imgmgr = match ImageManager::new() {
-            Ok(v) => v,
+            Ok(v) => {
+                info!("Opened G2D with version {}", v.version());
+                Some(v)
+            }
             Err(e) => {
-                error!("Could not open G2D: {:?}", e);
-                return;
+                warn!(
+                    "Could not open G2D ({e:?}); compressed passthrough only, no CameraFrame synthesis"
+                );
+                None
             }
         };
 
-        info!("Opened G2D with version {}", imgmgr.version());
-
         let mut video_decoder = None;
+        let mut frame_cdr = Vec::new();
+        let mut frame_seq = 0u64;
 
         for message in msg_stream {
             if !run.load(Ordering::Relaxed) {
@@ -275,34 +292,46 @@ async fn main() {
                 None => "".to_string(),
             };
 
-            if schema == "edgefirst_msgs/msg/DmaBuffer" {
-                // Don't send DMA buffer messages because they won't be useful
+            if schema == SCHEMA_DMA_BUFFER || schema == SCHEMA_CAMERA_FRAME {
+                // Recorded DMA/CameraFrame handles are process-local and stale.
                 continue;
             }
 
             if schema == "foxglove_msgs/msg/CompressedVideo" {
                 has_h264 = true;
-                stream_h264(
-                    &message,
-                    &mut video_decoder,
-                    &imgmgr,
-                    src_pid,
-                    &args,
-                    &session,
-                );
+                if let Some(imgmgr) = imgmgr.as_ref() {
+                    stream_h264(
+                        &message,
+                        &mut video_decoder,
+                        imgmgr,
+                        &mut FrameSink {
+                            src_pid,
+                            frame_seq: &mut frame_seq,
+                            frame_cdr: &mut frame_cdr,
+                            args: &args,
+                            session: &session,
+                        },
+                    );
+                }
                 args.tracy.then(|| secondary_frame_mark!("h264"));
             }
 
             // we don't use jpeg for DMA buffer when h264 is present
             if !has_h264 && schema == "sensor_msgs/msg/CompressedImage" {
-                stream_jpeg(
-                    &message,
-                    &mut video_decoder,
-                    &imgmgr,
-                    src_pid,
-                    &args,
-                    &session,
-                );
+                if let Some(imgmgr) = imgmgr.as_ref() {
+                    stream_jpeg(
+                        &message,
+                        &mut video_decoder,
+                        imgmgr,
+                        &mut FrameSink {
+                            src_pid,
+                            frame_seq: &mut frame_seq,
+                            frame_cdr: &mut frame_cdr,
+                            args: &args,
+                            session: &session,
+                        },
+                    );
+                }
                 args.tracy.then(|| secondary_frame_mark!("jpeg"));
             }
 
@@ -341,34 +370,25 @@ fn stream_h264<'a>(
     message: &Message,
     video_decoder: &mut Option<VideoDecoder<'a>>,
     imgmgr: &'a ImageManager,
-    src_pid: u32,
-    args: &Args,
-    session: &Session,
+    sink: &mut FrameSink<'_>,
 ) {
-    let video: FoxgloveCompressedVideo = match cdr::deserialize(&message.data) {
+    let video = match FoxgloveCompressedVideo::from_cdr(message.data.as_ref()) {
         Ok(v) => v,
         Err(e) => {
             error!("Could not deserialize CompressedVideo message: {:?}", e);
             return;
         }
     };
-    if video.format != "h264" {
-        error!("Unsupported CompressedVideo format {}", video.format);
+    if video.format() != "h264" {
+        error!("Unsupported CompressedVideo format {}", video.format());
         return;
     }
 
     if video_decoder.is_none() {
-        match VideoDecoder::new() {
-            Ok(v) => video_decoder.insert(v),
-            Err(e) => {
-                error!("Could not open video decoder: {:?}", e);
-                return;
-            }
-        };
+        *video_decoder = Some(VideoDecoder::new());
     }
     let video_decoder = video_decoder.as_mut().unwrap();
-    // let count = video_decoder.frame_count;
-    let frame = match video_decoder.decode_h264_msg(&video.data, imgmgr) {
+    let frame = match video_decoder.decode_h264_msg(video.data(), imgmgr) {
         Ok(v) => v,
         Err(e) => {
             error!("Could not decode video message: {:?}", e);
@@ -377,26 +397,7 @@ fn stream_h264<'a>(
     };
 
     if let Some(f) = frame {
-        // use std::{fs::File, io::Write};
-        // let _ = f.dmabuf().memory_map().unwrap().read(
-        //     move |b, _: Option<i32>| {
-        //         let mut file = File::create(format!("./frame{}.rgba", count))
-        //             .expect("Unable to create file");
-        //         file.write(b)?;
-        //         Ok(())
-        //     },
-        //     Some(1),
-        // );
-        let dma_msg = build_dma_msg_image(f, video.header.clone(), src_pid, args);
-        let msg = ZBytes::from(cdr::serialize::<_, _, CdrLe>(&dma_msg, Infinite).unwrap());
-        let enc = Encoding::APPLICATION_CDR.with_schema("edgefirst_msgs/msg/DmaBuffer");
-
-        match session.put(&args.dma_topic, msg).encoding(enc).wait() {
-            Ok(_) => trace!("Sent dma message on {}", args.dma_topic),
-            Err(e) => {
-                error!("Error sending message on {}: {:?}", args.dma_topic, e)
-            }
-        }
+        publish_camera_frame(f, video.stamp(), video.frame_id(), sink);
     }
 }
 
@@ -405,33 +406,25 @@ fn stream_jpeg<'a>(
     message: &Message,
     video_decoder: &mut Option<VideoDecoder<'a>>,
     imgmgr: &'a ImageManager,
-    src_pid: u32,
-    args: &Args,
-    session: &Session,
+    sink: &mut FrameSink<'_>,
 ) {
-    let image: CompressedImage = match cdr::deserialize(&message.data) {
+    let image = match CompressedImage::from_cdr(message.data.as_ref()) {
         Ok(v) => v,
         Err(e) => {
             error!("Could not deserialize CompressedImage message: {:?}", e);
             return;
         }
     };
-    if image.format != "jpeg" {
-        error!("Unsupported CompressedImage format {}", image.format);
+    if image.format() != "jpeg" {
+        error!("Unsupported CompressedImage format {}", image.format());
         return;
     }
 
     if video_decoder.is_none() {
-        match VideoDecoder::new() {
-            Ok(v) => video_decoder.insert(v),
-            Err(e) => {
-                error!("Could not open video decoder: {:?}", e);
-                return;
-            }
-        };
+        *video_decoder = Some(VideoDecoder::new());
     }
     let video_decoder = video_decoder.as_mut().unwrap();
-    let frame = match video_decoder.decode_jpeg_msg(&image.data, imgmgr) {
+    let frame = match video_decoder.decode_jpeg_msg(image.data(), imgmgr) {
         Ok(v) => v,
         Err(e) => {
             error!("Could not decode video message: {:?}", e);
@@ -439,44 +432,59 @@ fn stream_jpeg<'a>(
         }
     };
     if let Some(f) = frame {
-        let dma_msg = build_dma_msg_image(f, image.header.clone(), src_pid, args);
-        let msg = ZBytes::from(cdr::serialize::<_, _, CdrLe>(&dma_msg, Infinite).unwrap());
-        let enc = Encoding::APPLICATION_CDR.with_schema("edgefirst_msgs/msg/DmaBuffer");
-
-        match session.put(&args.dma_topic, msg).encoding(enc).wait() {
-            Ok(_) => (),
-            Err(e) => {
-                error!("Error sending message on {}: {:?}", args.dma_topic, e)
-            }
-        }
+        publish_camera_frame(f, image.stamp(), image.frame_id(), sink);
     }
 }
 
-fn build_dma_msg_image(buf: &Image, header: Header, pid: u32, args: &Args) -> DmaBuf {
-    let _ = args;
-
-    // let ts = buf.timestamp();
-    let width = buf.width();
-    let height = buf.height();
-    let fourcc = buf.format().into();
-    let dma_buf = buf.raw_fd();
-    // let dma_buf = buf.original_fd;
-    let length = buf.size() as u32;
-    let msg = DmaBuf {
-        header,
-        pid,
-        fd: dma_buf,
-        width,
-        height,
-        stride: width,
-        fourcc,
-        length,
+fn publish_camera_frame(buf: &Image, stamp: Time, frame_id: &str, sink: &mut FrameSink<'_>) {
+    let shape = [buf.height() as u64, buf.width() as u64];
+    let length = buf.size() as u64;
+    let planes = [TensorPlaneView {
+        handle: buf.raw_fd() as i64,
+        offset: 0,
+        stride: buf.stride() as u64,
+        size: length,
+        used: length,
+        modifier: 0,
+        handle_bytes: &[],
+        data: &[],
+    }];
+    let format = buf.format().to_string();
+    let fields = TensorFields {
+        storage_kind: TENSOR_STORAGE_DMA,
+        pid: sink.src_pid,
+        fence_fd: -1,
+        dtype: TENSOR_DTYPE_U8,
+        shape: &shape,
+        planes: &planes,
+        format: format.into(),
+        ..Default::default()
     };
-    trace!(
-        "dmabuf dma_buf: {} pid: {} length: {}",
-        dma_buf,
-        pid,
-        length,
-    );
-    msg
+
+    *sink.frame_seq += 1;
+    if let Err(e) = CameraFrame::builder()
+        .stamp(stamp)
+        .frame_id(frame_id)
+        .seq(*sink.frame_seq)
+        .tensor(&fields)
+        .encode_into_vec(sink.frame_cdr)
+    {
+        error!("Could not encode CameraFrame: {:?}", e);
+        return;
+    }
+
+    let msg = ZBytes::from(sink.frame_cdr.as_slice());
+    let enc = Encoding::APPLICATION_CDR.with_schema(SCHEMA_CAMERA_FRAME);
+
+    match sink
+        .session
+        .put(&sink.args.dma_topic, msg)
+        .encoding(enc)
+        .wait()
+    {
+        Ok(_) => debug!("Sent CameraFrame on {}", sink.args.dma_topic),
+        Err(e) => {
+            error!("Error sending message on {}: {:?}", sink.args.dma_topic, e)
+        }
+    }
 }

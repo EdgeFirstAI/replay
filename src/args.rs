@@ -24,8 +24,8 @@ pub struct Args {
     #[arg(short, long, env, default_value = "1.0")]
     pub replay_speed: f64,
 
-    /// raw dma topic
-    #[arg(long, default_value = "rt/camera/dma")]
+    /// CameraFrame topic for decoded frames
+    #[arg(long, default_value = "rt/camera/frame")]
     pub dma_topic: String,
 
     /// list all topics

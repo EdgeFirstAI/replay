@@ -106,53 +106,30 @@ impl From<G2DPhysical> for g2d_phys_addr_t_new {
     }
 }
 
-impl From<&Frame> for g2d_surface {
-    fn from(frame: &Frame) -> Self {
-        let from_phys: G2DPhysical = match frame.paddr() {
-            Some(v) => (v as u64).into(),
-            None => unsafe { DmaBuf::from_raw_fd(frame.handle()).into() },
-        };
-        let fourcc = FourCC::from(frame.fourcc());
-        let planes = match fourcc {
-            NV12 => {
-                let width = frame.width();
-                let height = frame.height();
-                let y_size = width * height;
-                let v_size = y_size / 4;
-                let phys = from_phys.into();
-                [phys, phys + y_size, phys + y_size + v_size]
-            }
-            _ => [from_phys.into(), 0, 0],
-        };
-        g2d_surface {
-            planes,
-            format: G2DFormat::from(fourcc).format(),
-            left: 0,
-            top: 0,
-            right: frame.width(),
-            bottom: frame.height(),
-            stride: frame.width(),
-            width: frame.width(),
-            height: frame.height(),
-            blendfunc: 0,
-            clrcolor: 0,
-            rot: 0,
-            global_alpha: 0,
+fn frame_phys(frame: &Frame) -> Result<G2DPhysical, std::io::Error> {
+    match frame.paddr().map_err(io_error)? {
+        Some(v) => Ok((v as u64).into()),
+        None => {
+            let handle = frame.handle().map_err(io_error)?;
+            Ok(unsafe { DmaBuf::from_raw_fd(handle).into() })
         }
     }
 }
 
-impl From<&Frame> for g2d_surface_new {
-    fn from(frame: &Frame) -> Self {
-        let from_phys: G2DPhysical = match frame.paddr() {
-            Some(v) => (v as u64).into(),
-            None => unsafe { DmaBuf::from_raw_fd(frame.handle()).into() },
-        };
-        let fourcc = FourCC::from(frame.fourcc());
+fn io_error(err: videostream::Error) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, err)
+}
+
+impl TryFrom<&Frame> for g2d_surface {
+    type Error = std::io::Error;
+
+    fn try_from(frame: &Frame) -> Result<Self, Self::Error> {
+        let from_phys = frame_phys(frame)?;
+        let fourcc = FourCC::from(frame.fourcc().map_err(io_error)?);
+        let width = frame.width().map_err(io_error)?;
+        let height = frame.height().map_err(io_error)?;
         let planes = match fourcc {
             NV12 => {
-                let width = frame.width() as u64;
-                let height = frame.height() as u64;
                 let y_size = width * height;
                 let v_size = y_size / 4;
                 let phys = from_phys.into();
@@ -160,21 +137,56 @@ impl From<&Frame> for g2d_surface_new {
             }
             _ => [from_phys.into(), 0, 0],
         };
-        Self {
+        Ok(g2d_surface {
             planes,
             format: G2DFormat::from(fourcc).format(),
             left: 0,
             top: 0,
-            right: frame.width(),
-            bottom: frame.height(),
-            stride: frame.width(),
-            width: frame.width(),
-            height: frame.height(),
+            right: width,
+            bottom: height,
+            stride: width,
+            width,
+            height,
             blendfunc: 0,
             clrcolor: 0,
             rot: 0,
             global_alpha: 0,
-        }
+        })
+    }
+}
+
+impl TryFrom<&Frame> for g2d_surface_new {
+    type Error = std::io::Error;
+
+    fn try_from(frame: &Frame) -> Result<Self, Self::Error> {
+        let from_phys = frame_phys(frame)?;
+        let fourcc = FourCC::from(frame.fourcc().map_err(io_error)?);
+        let width = frame.width().map_err(io_error)?;
+        let height = frame.height().map_err(io_error)?;
+        let planes = match fourcc {
+            NV12 => {
+                let y_size = width as u64 * height as u64;
+                let v_size = y_size / 4;
+                let phys = from_phys.into();
+                [phys, phys + y_size, phys + y_size + v_size]
+            }
+            _ => [from_phys.into(), 0, 0],
+        };
+        Ok(Self {
+            planes,
+            format: G2DFormat::from(fourcc).format(),
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+            stride: width,
+            width,
+            height,
+            blendfunc: 0,
+            clrcolor: 0,
+            rot: 0,
+            global_alpha: 0,
+        })
     }
 }
 #[repr(C)]
