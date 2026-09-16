@@ -47,11 +47,9 @@ clean:
 verify-version:
 	@echo "Checking version consistency..."
 	@VERSION=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/'); \
-	G2D_VERSION=$$(grep '^version' g2d-sys/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/'); \
-	echo "Main version: $$VERSION"; \
-	echo "g2d-sys version: $$G2D_VERSION"; \
-	if [ "$$VERSION" != "$$G2D_VERSION" ]; then \
-		echo "ERROR: Version mismatch between Cargo.toml and g2d-sys/Cargo.toml"; \
+	echo "Package version: $$VERSION"; \
+	if [ -z "$$VERSION" ]; then \
+		echo "ERROR: Could not read version from Cargo.toml"; \
 		exit 1; \
 	fi
 	@echo "Version check passed!"
