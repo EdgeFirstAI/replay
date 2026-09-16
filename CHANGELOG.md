@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** Bumped `edgefirst-schemas` 3.4.0 → 4.0. Synthesized camera
+  frames are now `edgefirst_msgs/msg/CameraFrame` on `rt/camera/frame`
+  (default `--dma-topic`), matching the live camera 4.x wire contract.
+  Recorded `DmaBuffer` and `CameraFrame` messages are still skipped because
+  their fds are process-local. Consumers of `rt/camera/dma` / `DmaBuffer`
+  must subscribe to `CameraFrame` instead; `--camera-image-topic` is
+  unchanged.
+- Aligned Tracy with other EdgeFirst services: `tracing-tracy` 0.12.0,
+  `tracy-client` 0.19.0, `tracy-client-sys` 0.30.0.
+- Upgraded `videostream` 2.5.2 → 2.5.3.
+
 ## [2.3.0] - 2026-05-22
 
 ### Changed

@@ -171,59 +171,43 @@ sharing for NXP i.MX platforms.
 ### Technology Stack
 
 - **Language:** Rust 2021 edition
-- **Async runtime:** Tokio (single-threaded, `rt` feature)
-- **Key dependencies:** g2d-sys 1.2.0, videostream 2.1.4, zenoh 1.3.4, mcap, turbojpeg, dma-heap
+- **Runtime:** sync `main` (no tokio). HAL GL converter uses
+  `blocking_recv` and panics inside a tokio runtime.
+- **Key dependencies:** edgefirst-hal 0.23, edgefirst-schemas 4.0,
+  videostream 2.5, zenoh 1.3.4, mcap
 - **Target platforms:** Linux aarch64 (NXP i.MX 8M Plus, i.MX 95)
-- **Profiling:** Tracy with manual-lifetime and broadcast features
+- **Profiling:** Tracy (`tracy-client` 0.19 / `tracy-client-sys` 0.30)
 
 ### Module Structure
 
 ```
 src/
-├── main.rs          # Entry point, replay loop, message publishing
-├── image.rs         # DMA buffer allocation, G2D surface creation, format conversion
-├── video_decode.rs  # H.264/JPEG decoding with frame buffer pool
-├── args.rs          # CLI argument parsing, Zenoh configuration
-├── services.rs      # System service management for topic conflicts
-└── services.json    # Topic-to-service mapping
+├── main.rs            # Entry point, replay loop, CameraFrame publishing
+├── image_publish.rs   # Optional HAL RGBA sensor_msgs/Image side channel
+├── video_decode.rs    # V4L2 H.264 + HAL JPEG decode
+├── args.rs            # CLI argument parsing, Zenoh configuration
+├── services.rs        # System service management for topic conflicts
+└── services.json      # Topic-to-service mapping
 ```
 
-### DMA Buffer Handling
+### CameraFrame Publishing
 
-- Use `dma-heap` crate for CMA buffer allocation (`HeapKind::Cma`)
-- Use `G2DPhysical::new(fd)` for physical address resolution (returns `Result`)
-- Use persistent `MappedImage` for CPU access — never mmap/munmap per frame
-- Always check `mmap` return for `MAP_FAILED` and `munmap` return for `!= 0`
+Synthesize `edgefirst_msgs/msg/CameraFrame` to match camera 4.x:
 
-### G2D Usage
-
-The upstream `g2d-sys` crate provides:
-- `G2D::new("libg2d.so.2")` — opens the G2D library with automatic version detection
-- `G2D::blit(&src, &dst)` — queues a blit operation (handles ABI dispatch internally)
-- `G2D::finish()` — waits for hardware completion
-- `G2DSurface` — modern surface struct with `c_ulong` planes (64-bit safe)
-
-**Important:** `G2D` uses `Rc<g2d>` internally and is `!Send`. This is fine with
-Tokio's single-threaded runtime (`features = ["rt"]`).
-
-### Cache Coherency
-
-DMA-buf buffers on cached CMA heaps require the full cache coherency protocol
-(DRM PRIME import + DMA_BUF_IOCTL_SYNC) for correct CPU reads after GPU writes.
-See `ARCHITECTURE.md` and the
-[g2d-rs ARCHITECTURE.md](https://github.com/EdgeFirstAI/g2d-rs/blob/main/ARCHITECTURE.md)
-for details.
+- `storage_kind = 2` (DmaBuf), `dtype = 0` (`EfDtype::U8`; `I8` is 1)
+- `shape = [height, width]`, `strides = [row_stride_bytes, pixel_stride]`
+- Single-plane contiguous dma-buf (`handle` is the fd, not an index)
+- Skip recorded `DmaBuffer` and `CameraFrame` — fds are process-local
+- Default topic is `rt/camera/frame` (`--dma-topic`)
 
 ### Common Pitfalls
 
-1. **Don't use `g2d_alloc`** — use DMA-heap allocation (`Image::new`) instead
-2. **Don't mmap/munmap per frame** — use persistent `MappedImage`
-3. **Don't use `dup()` on fds** — use `OwnedFd`/`BorrowedFd` for ownership
-4. **Don't use `unwrap()` on CDR serialize** — handle errors gracefully
-5. **Don't use `std::process::Command` in async** — use `tokio::process::Command`
-6. **Don't drop the Tracy client handle** — store in a variable (`let _tracy = ...`)
-7. **Don't assume `G2D` is `Send`** — it uses `Rc` internally
-8. **Stride is in pixels for G2D** but in bytes for DmaBuf messages
+1. **Don't reintroduce tokio `#[tokio::main]`** — HAL GL `blocking_recv` panics
+2. **Don't use `dtype = 1` for U8** — that is `I8` in the HAL ABI
+3. **Don't republish recorded CameraFrame/DmaBuffer** — fds belong to the recorder
+4. **Don't use `unwrap()` on CDR encode** — handle errors gracefully
+5. **Don't drop the Tracy client handle** — store in a variable (`let _tracy = ...`)
+6. **H.264 decode uses `Decoder::create_ex`**, not the legacy `create()` entry
 
 ### Build Commands
 

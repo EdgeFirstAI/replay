@@ -37,7 +37,7 @@ TOPICS=""
 
 # Space-delimited list of Zenoh topics to ignore during replay. Messages
 # on these topics will be skipped even if they appear in the recording.
-# Example: IGNORE_TOPICS="rt/camera/dma rt/camera/jpeg"
+# Example: IGNORE_TOPICS="rt/camera/frame rt/camera/jpeg"
 IGNORE_TOPICS=""
 
 # ---------------------------------------------------------------------------

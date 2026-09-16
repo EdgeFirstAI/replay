@@ -38,13 +38,13 @@ pub struct Args {
     #[arg(short, long, env = "REPLAY_SPEED", default_value = "1.0", value_parser = parse_replay_speed)]
     pub replay_speed: f64,
 
-    /// Zenoh topic for raw DMA buffer metadata
-    #[arg(long, default_value = "rt/camera/dma")]
+    /// Zenoh topic for synthesized CameraFrame (decoder-native NV12 dma-buf)
+    #[arg(long, default_value = "rt/camera/frame")]
     pub dma_topic: String,
 
     /// Zenoh topic for hal-decoded RGBA sensor_msgs/Image output (e.g.
     /// `rt/camera/image`). Empty disables this side channel; the camera-native
-    /// NV12 DmaBuffer publish on `--dma-topic` is unaffected.
+    /// CameraFrame publish on `--dma-topic` is unaffected.
     #[arg(long, env = "CAMERA_IMAGE_TOPIC", default_value = "")]
     pub camera_image_topic: String,
 

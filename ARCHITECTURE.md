@@ -18,18 +18,18 @@ hardware-accelerated decoding and DMA buffer sharing.
                     +------------------+
                     |  Video Pipeline  |
                     +------------------+
-                    |  H.264 Decoder   |
-                    |  (videostream)   |
+                    |  H.264 (V4L2)    |
+                    |  JPEG (hal codec)|
                     +--------+---------+
                              |
                     +--------v---------+
-                    |   G2D Converter  |
-                    |   (g2d-sys FFI)  |
+                    |  CameraFrame     |
+                    |  (NV12 dma-buf)  |
                     +--------+---------+
                              |
                     +--------v---------+
-                    |   DMA Buffer     |
-                    |   Publishing     |
+                    |  Optional RGBA   |
+                    |  (hal ImageProc) |
                     +------------------+
 ```
 
@@ -47,22 +47,18 @@ Entry point and core replay logic:
 
 ### video_decode.rs
 
-H.264 and JPEG decoding with frame buffer management:
+H.264 and JPEG decoding:
 
-- Hardware VPU decoder via videostream library
-- Frame buffer pool (4 buffers for pipelining)
-- JPEG fallback via turbojpeg with persistent mmap
-- DMA-heap buffer allocation for decoded frames
+- Hardware V4L2 mem2mem decoder via videostream (`Decoder::create_ex`)
+- Transient OUTPUT-queue backpressure retries
+- JPEG decode through `edgefirst-codec` into a pre-allocated NV12 dma-buf ring
 
-### image.rs
+### image_publish.rs
 
-Hardware-accelerated image management using NXP G2D:
+Optional `sensor_msgs/Image` RGBA side channel (`--camera-image-topic`):
 
-- DMA buffer allocation via dma-heap (CMA heap)
-- G2D surface creation from Images and VPU Frames
-- Color space conversion (NV12/YUYV to RGBA) via G2D blit
-- Persistent memory mapping with mmap/munmap
-- Physical address resolution via G2DPhysical
+- `edgefirst-hal` `ImageProcessor` (G2D / OpenGL / CPU)
+- Inode-keyed source tensor cache and a reused destination ring
 
 ### args.rs
 
@@ -105,10 +101,12 @@ Topics not matching any prefix are ignored (no service stopped).
 1. **MCAP Parsing**: File is memory-mapped and parsed using the mcap crate
 2. **Topic Filtering**: Messages filtered by include/exclude patterns
 3. **Video Detection**: H.264 and JPEG streams identified by topic/encoding
-4. **Hardware Decoding**: Video frames decoded via VPU (videostream library)
-5. **Color Conversion**: Decoded frames converted to RGBA via G2D hardware
-6. **DMA Publishing**: Frames published as DMA buffers on Zenoh topics
-7. **Passthrough**: Non-video messages published unchanged
+4. **Hardware Decoding**: H.264 via videostream V4L2; JPEG via edgefirst-codec
+5. **CameraFrame Publishing**: Decoder-native NV12 dma-buf as schemas 4.0
+   `CameraFrame` on `--dma-topic` (default `rt/camera/frame`)
+6. **Optional RGBA**: `--camera-image-topic` converts NV12 → `sensor_msgs/Image`
+7. **Passthrough**: Non-video messages published unchanged. Recorded
+   `DmaBuffer` / `CameraFrame` messages are skipped (fds are process-local).
 
 ## Performance Considerations
 
@@ -118,22 +116,14 @@ The system uses DMA buffers throughout to minimize memory copies:
 
 - MCAP file is memory-mapped (not loaded into RAM)
 - Decoder outputs directly to DMA buffers
-- G2D operates on physical addresses
-- Zenoh publishes DMA buffer file descriptors
-
-### Frame Buffer Pool
-
-A pool of 4 frame buffers enables pipelining:
-
-- Decoder can work on frame N while G2D processes frame N-1
-- Reduces latency compared to single-buffer approach
-- Round-robin allocation prevents memory fragmentation
+- JPEG decode writes into a pre-allocated NV12 dma-buf ring
+- Zenoh publishes CameraFrame descriptors that name those fds
 
 ### Hardware Acceleration
 
-- **VPU**: Hardware video decoding (H.264)
-- **G2D**: Hardware 2D graphics operations
-- **DMA-Heap**: Kernel-managed DMA buffer allocation
+- **VPU / V4L2**: Hardware H.264 decode (`/dev/video1 vsi_v4l2dec` on imx8mp)
+- **HAL ImageProcessor**: Optional NV12 → RGBA (G2D / OpenGL / CPU)
+- **edgefirst-codec**: JPEG decode into dma-buf tensors
 
 ## Cache Coherency
 
@@ -159,15 +149,13 @@ is required.
 
 ### Runtime
 
-- **g2d-sys 1.2.0**: NXP G2D FFI bindings with automatic ABI version dispatch
-- **videostream 2.1.4**: Video codec abstraction (V4L2 CODEC API)
+- **edgefirst-hal / edgefirst-codec 0.23.1**: Image conversion and JPEG decode
+- **edgefirst-schemas 4.0**: Zero-copy `CameraFrame` / compressed-video views
+- **videostream 2.5.3**: V4L2 H.264 decode
 - **zenoh 1.3.4**: Pub/sub messaging
 - **mcap 0.18.0**: MCAP file format
-- **turbojpeg 1.3.3**: JPEG decoding fallback
-- **tokio 1.45.0**: Async runtime
 
 ### Hardware
 
-- **G2D Library** (libg2d.so.2): NXP i.MX graphics acceleration
-- **DMA-Heap**: Linux kernel DMA buffer allocation
-- **VPU Driver**: Hardware video codec support
+- **V4L2 decoder** (`vsidaemon` + `/dev/video1` on imx8mp)
+- **Optional G2D / GPU** via HAL for `--camera-image-topic`

@@ -11,22 +11,24 @@ mod video_decode;
 use args::Args;
 use clap::Parser;
 use edgefirst_hal::tensor::TensorDyn;
-#[allow(deprecated)]
-use edgefirst_schemas::edgefirst_msgs::DmaBuffer;
 use edgefirst_schemas::{
-    builtin_interfaces::Time, foxglove_msgs::FoxgloveCompressedVideo, sensor_msgs::CompressedImage,
+    builtin_interfaces::Time,
+    edgefirst_msgs::{CameraFrame, TensorFields, TensorPlaneView},
+    foxglove_msgs::FoxgloveCompressedVideo,
+    sensor_msgs::CompressedImage,
 };
 use image_publish::HalImagePublisher;
 use log::{debug, error, info, warn};
 use mcap::Message;
 use memmap2::Mmap;
 use services::ServiceHandler;
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 use std::thread::sleep;
 use std::{
     collections::HashSet,
     error::Error,
     fs,
-    os::fd::AsRawFd,
     path::Path,
     process,
     sync::{
@@ -46,8 +48,15 @@ use zenoh::{
     Session, Wait,
 };
 
-const DMA_SCHEMA: &str = "edgefirst_msgs/msg/DmaBuffer";
+const SCHEMA_DMA_BUFFER: &str = "edgefirst_msgs/msg/DmaBuffer";
+const SCHEMA_CAMERA_FRAME: &str = "edgefirst_msgs/msg/CameraFrame";
+#[cfg(target_os = "linux")]
 const NV12_FOURCC: u32 = u32::from_le_bytes(*b"NV12");
+/// HAL Modular Tensor ABI codes carried (not interpreted) by schemas 4.0.
+/// `storage_kind = 2` is `EfStorageKind::DmaBuf`; `dtype = 0` is `EfDtype::U8`
+/// (`I8` is 1). See `edgefirst-tensor-abi`.
+const TENSOR_STORAGE_KIND_DMA_BUF: u32 = 2;
+const TENSOR_DTYPE_U8: u32 = 0;
 
 fn map_mcap<P: AsRef<Path>>(p: P) -> Result<Mmap, String> {
     let fd = match fs::File::open(p.as_ref()) {
@@ -249,6 +258,8 @@ fn main() {
 
         let mut video_decoder: Option<VideoDecoder> = None;
         let mut jpeg_stream: Option<JpegStream> = None;
+        let mut frame_seq = 0u64;
+        let mut frame_cdr = Vec::new();
 
         for message in msg_stream {
             if !run.load(Ordering::Relaxed) {
@@ -280,10 +291,8 @@ fn main() {
                 None => "".to_string(),
             };
 
-            if schema == "edgefirst_msgs/msg/DmaBuffer" {
-                // Don't re-publish recorded DMA buffer messages — the fd
-                // references in the MCAP belong to the original publisher's
-                // process and are meaningless here.
+            if schema == SCHEMA_DMA_BUFFER || schema == SCHEMA_CAMERA_FRAME {
+                // Recorded DMA/CameraFrame handles are process-local and stale.
                 continue;
             }
 
@@ -293,6 +302,8 @@ fn main() {
                     &message,
                     &mut video_decoder,
                     src_pid,
+                    &mut frame_seq,
+                    &mut frame_cdr,
                     &args,
                     &session,
                     hal_publisher.as_mut(),
@@ -306,6 +317,8 @@ fn main() {
                     &message,
                     &mut jpeg_stream,
                     src_pid,
+                    &mut frame_seq,
+                    &mut frame_cdr,
                     &args,
                     &session,
                     hal_publisher.as_mut(),
@@ -344,10 +357,13 @@ fn main() {
 }
 
 #[instrument(skip_all)]
+#[allow(clippy::too_many_arguments)]
 fn stream_h264(
     message: &Message,
     video_decoder: &mut Option<VideoDecoder>,
     src_pid: u32,
+    frame_seq: &mut u64,
+    frame_cdr: &mut Vec<u8>,
     args: &Args,
     session: &Session,
     hal_publisher: Option<&mut HalImagePublisher>,
@@ -387,8 +403,17 @@ fn stream_h264(
     let stamp = video.stamp();
     let frame_id = video.frame_id();
 
-    if let Err(e) = publish_frame_dma(&frame, stamp, frame_id, src_pid, &args.dma_topic, session) {
-        error!("Failed to publish dma message: {:?}", e);
+    if let Err(e) = publish_frame_camera(
+        &frame,
+        stamp,
+        frame_id,
+        src_pid,
+        frame_seq,
+        frame_cdr,
+        &args.dma_topic,
+        session,
+    ) {
+        error!("Failed to publish CameraFrame: {:?}", e);
     }
 
     if let Some(publisher) = hal_publisher {
@@ -406,10 +431,13 @@ fn stream_h264(
 }
 
 #[instrument(skip_all)]
+#[allow(clippy::too_many_arguments)]
 fn stream_jpeg(
     message: &Message,
     jpeg_stream: &mut Option<JpegStream>,
     src_pid: u32,
+    frame_seq: &mut u64,
+    frame_cdr: &mut Vec<u8>,
     args: &Args,
     session: &Session,
     hal_publisher: Option<&mut HalImagePublisher>,
@@ -448,8 +476,17 @@ fn stream_jpeg(
     let stamp = image.stamp();
     let frame_id = image.frame_id();
 
-    if let Err(e) = publish_tensor_dma(tensor, stamp, frame_id, src_pid, &args.dma_topic, session) {
-        error!("Failed to publish dma message: {:?}", e);
+    if let Err(e) = publish_tensor_camera(
+        tensor,
+        stamp,
+        frame_id,
+        src_pid,
+        frame_seq,
+        frame_cdr,
+        &args.dma_topic,
+        session,
+    ) {
+        error!("Failed to publish CameraFrame: {:?}", e);
     }
 
     if let Some(publisher) = hal_publisher {
@@ -461,12 +498,15 @@ fn stream_jpeg(
     }
 }
 
-/// Publish a videostream Frame as a `DmaBuffer` carrying decoder-native NV12.
-fn publish_frame_dma(
+/// Publish a videostream Frame as a `CameraFrame` carrying decoder-native NV12.
+#[allow(clippy::too_many_arguments)]
+fn publish_frame_camera(
     frame: &Frame,
     stamp: Time,
     frame_id: &str,
     pid: u32,
+    seq: &mut u64,
+    cdr: &mut Vec<u8>,
     topic: &str,
     session: &Session,
 ) -> Result<(), Box<dyn Error>> {
@@ -476,52 +516,52 @@ fn publish_frame_dma(
     let stride = frame.stride()? as u32;
     let fourcc = frame.fourcc()?;
     let length = dma_buffer_length(fourcc, stride, height)?;
+    let format = fourcc_str(fourcc);
 
-    publish_dma_buffer(
-        stamp, frame_id, pid, fd, width, height, stride, fourcc, length, topic, session,
+    publish_camera_frame(
+        stamp, frame_id, pid, fd, width, height, stride, &format, length, seq, cdr, topic, session,
     )
 }
 
-/// Publish a hal NV12 dma-buf TensorDyn as a `DmaBuffer`.
-fn publish_tensor_dma(
+/// Publish a hal NV12 dma-buf TensorDyn as a `CameraFrame`.
+#[allow(clippy::too_many_arguments)]
+fn publish_tensor_camera(
     tensor: &TensorDyn,
     stamp: Time,
     frame_id: &str,
     pid: u32,
+    seq: &mut u64,
+    cdr: &mut Vec<u8>,
     topic: &str,
     session: &Session,
 ) -> Result<(), Box<dyn Error>> {
-    let fd_borrow = tensor.dmabuf()?;
-    let fd = fd_borrow.as_raw_fd();
-    let width = tensor.width().ok_or("tensor missing width")? as u32;
-    let height = tensor.height().ok_or("tensor missing height")? as u32;
-    let stride = tensor
-        .effective_row_stride()
-        .map(|s| s as u32)
-        .unwrap_or(width);
-    let length = dma_buffer_length(NV12_FOURCC, stride, height)?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (tensor, stamp, frame_id, pid, seq, cdr, topic, session);
+        Err("CameraFrame dma-buf publish requires Linux".into())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let fd = tensor.dmabuf()?.as_raw_fd();
+        let width = tensor.width().ok_or("tensor missing width")? as u32;
+        let height = tensor.height().ok_or("tensor missing height")? as u32;
+        let stride = tensor
+            .effective_row_stride()
+            .map(|s| s as u32)
+            .unwrap_or(width);
+        let length = dma_buffer_length(NV12_FOURCC, stride, height)?;
 
-    publish_dma_buffer(
-        stamp,
-        frame_id,
-        pid,
-        fd,
-        width,
-        height,
-        stride,
-        NV12_FOURCC,
-        length,
-        topic,
-        session,
-    )
+        publish_camera_frame(
+            stamp, frame_id, pid, fd, width, height, stride, "NV12", length, seq, cdr, topic,
+            session,
+        )
+    }
 }
 
 /// Total dma-buf byte length for a decoder-/camera-native frame layout.
 ///
-/// `stride` is the row stride in bytes for the primary (luma) plane, exactly
-/// as carried in the `DmaBuffer` schema. Returns an error for fourcc values
-/// the camera/dma contract doesn't define, since the receiver wouldn't know
-/// how to size its mmap.
+/// `stride` is the row stride in bytes for the primary (luma) plane.
+/// Returns an error for fourcc values the camera contract doesn't define.
 fn dma_buffer_length(fourcc: u32, stride: u32, height: u32) -> Result<u32, Box<dyn Error>> {
     let stride = stride as u64;
     let height = height as u64;
@@ -532,7 +572,7 @@ fn dma_buffer_length(fourcc: u32, stride: u32, height: u32) -> Result<u32, Box<d
         b"YUYV" => stride * height,
         other => {
             return Err(format!(
-                "unsupported camera/dma fourcc {:?} for length computation",
+                "unsupported camera fourcc {:?} for length computation",
                 String::from_utf8_lossy(other)
             )
             .into())
@@ -541,8 +581,30 @@ fn dma_buffer_length(fourcc: u32, stride: u32, height: u32) -> Result<u32, Box<d
     Ok(bytes as u32)
 }
 
-#[allow(clippy::too_many_arguments, deprecated)]
-fn publish_dma_buffer(
+fn fourcc_str(fourcc: u32) -> String {
+    String::from_utf8_lossy(&fourcc.to_le_bytes())
+        .trim_end_matches('\0')
+        .to_string()
+}
+
+/// Bytes per addressing-grid sample along the width axis.
+///
+/// Tensor `shape` is `[height, width]`, not the byte layout. Packed YUYV
+/// stores two bytes per pixel; NV12 luma is one. Matches camera's
+/// `pixel_stride_bytes`.
+fn pixel_stride_bytes(format: &str) -> i64 {
+    match format {
+        "YUYV" | "UYVY" | "YVYU" | "VYUY" => 2,
+        "RGB3" | "BGR3" => 3,
+        "RGBA" | "RGBX" | "BGRA" | "BGRX" | "ARGB" | "ABGR" => 4,
+        _ => 1,
+    }
+}
+
+/// Encode and publish a CameraFrame matching the live camera 4.x wire contract:
+/// single-plane contiguous DMA-BUF, `dtype = 0` (U8), empty colorimetry.
+#[allow(clippy::too_many_arguments)]
+fn publish_camera_frame(
     stamp: Time,
     frame_id: &str,
     pid: u32,
@@ -550,24 +612,130 @@ fn publish_dma_buffer(
     width: u32,
     height: u32,
     stride: u32,
-    fourcc: u32,
+    format: &str,
     length: u32,
+    seq: &mut u64,
+    cdr: &mut Vec<u8>,
     topic: &str,
     session: &Session,
 ) -> Result<(), Box<dyn Error>> {
-    let msg = DmaBuffer::new(
-        stamp, frame_id, pid, fd, width, height, stride, fourcc, length,
+    *seq += 1;
+    encode_camera_frame(
+        stamp, frame_id, *seq, pid, width, height, format, fd, stride, length, cdr,
     )?;
-    let bytes = msg.into_cdr();
-    let enc = Encoding::APPLICATION_CDR.with_schema(DMA_SCHEMA);
+    let enc = Encoding::APPLICATION_CDR.with_schema(SCHEMA_CAMERA_FRAME);
     session
-        .put(topic, ZBytes::from(bytes))
+        .put(topic, ZBytes::from(cdr.as_slice()))
         .encoding(enc)
         .wait()
         .map_err(|e| format!("zenoh put on {topic} failed: {e:?}"))?;
     debug!(
-        "Sent dma message on {topic} fd={fd} {width}x{height} stride={stride} \
-         fourcc=0x{fourcc:08x} length={length}"
+        "Sent CameraFrame on {topic} seq={seq} fd={fd} {width}x{height} \
+         stride={stride} format={format} length={length}"
     );
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_camera_frame(
+    stamp: Time,
+    frame_id: &str,
+    seq: u64,
+    pid: u32,
+    width: u32,
+    height: u32,
+    format: &str,
+    plane_fd: i32,
+    plane_stride: u32,
+    plane_len: u32,
+    cdr: &mut Vec<u8>,
+) -> Result<(), Box<dyn Error>> {
+    let shape = [height as u64, width as u64];
+    let strides = [plane_stride as i64, pixel_stride_bytes(format)];
+    let plane = TensorPlaneView {
+        handle: plane_fd as i64,
+        offset: 0,
+        stride: plane_stride as u64,
+        size: plane_len as u64,
+        used: plane_len as u64,
+        modifier: 0,
+        handle_bytes: &[],
+        data: &[],
+    };
+    let tensor = TensorFields {
+        storage_kind: TENSOR_STORAGE_KIND_DMA_BUF,
+        pid,
+        fence_fd: -1,
+        dtype: TENSOR_DTYPE_U8,
+        quant_axis: -2,
+        shape: &shape,
+        strides: &strides,
+        quant_scales: &[],
+        quant_zero_points: &[],
+        format: format.into(),
+        color_space: "".into(),
+        color_transfer: "".into(),
+        color_encoding: "".into(),
+        color_range: "".into(),
+        planes: std::slice::from_ref(&plane),
+    };
+    CameraFrame::builder()
+        .stamp(stamp)
+        .frame_id(frame_id)
+        .seq(seq)
+        .tensor(&tensor)
+        .encode_into_vec(cdr)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pixel_stride_bytes_matches_camera() {
+        assert_eq!(pixel_stride_bytes("NV12"), 1);
+        assert_eq!(pixel_stride_bytes("YUYV"), 2);
+        assert_eq!(pixel_stride_bytes("RGBA"), 4);
+    }
+
+    #[test]
+    fn camera_frame_embeds_dma_plane_with_hal_u8_dtype() {
+        let mut cdr = Vec::new();
+        encode_camera_frame(
+            Time { sec: 1, nanosec: 2 },
+            "camera",
+            42,
+            1000,
+            1920,
+            1080,
+            "NV12",
+            7,
+            1920,
+            1920 * 1080 * 3 / 2,
+            &mut cdr,
+        )
+        .expect("CameraFrame CDR build must succeed");
+
+        let cf = CameraFrame::<&[u8]>::from_cdr(cdr.as_slice()).unwrap();
+        assert_eq!(cf.seq(), 42);
+        assert_eq!(cf.frame_id(), "camera");
+        assert_eq!(cf.stamp(), Time { sec: 1, nanosec: 2 });
+
+        let t = cf.tensor();
+        assert_eq!(t.storage_kind(), TENSOR_STORAGE_KIND_DMA_BUF);
+        // Literal HAL ABI value: EfDtype::U8 = 0 (I8 = 1).
+        assert_eq!(t.dtype(), 0);
+        assert_eq!(t.pid(), 1000);
+        assert_eq!(t.fence_fd(), -1);
+        assert_eq!(t.format(), "NV12");
+        assert_eq!(t.shape().collect::<Vec<_>>(), vec![1080, 1920]);
+        assert_eq!(t.strides().collect::<Vec<_>>(), vec![1920, 1]);
+        assert_eq!(t.num_planes(), 1);
+        let plane = t.plane_at(0).unwrap();
+        assert_eq!(plane.handle, 7);
+        assert_eq!(plane.stride, 1920);
+        assert_eq!(plane.size, 1920 * 1080 * 3 / 2);
+        assert!(plane.data.is_empty());
+    }
 }

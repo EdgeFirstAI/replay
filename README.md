@@ -85,7 +85,7 @@ edgefirst-replay recording.mcap --system
 | `-s, --system` | Stop conflicting system services | - |
 | `-t, --topics` | Topics to publish (space-separated) | All topics |
 | `-i, --ignore-topics` | Topics to ignore | - |
-| `--dma-topic` | Raw DMA buffer topic | `rt/camera/dma` |
+| `--dma-topic` | Synthesized CameraFrame topic | `rt/camera/frame` |
 | `--rust-log` | Application log level | `info` |
 | `--tracy` | Enable Tracy profiler broadcast | - |
 | `--mode` | Zenoh connection mode | `peer` |

@@ -5,7 +5,8 @@
 //!
 //! Converts decoder-native NV12 frames (h264) or hal-decoded NV12 tensors
 //! (jpeg) to RGBA using `edgefirst_hal::image::ImageProcessor` and publishes
-//! as `sensor_msgs/Image`. Enabled via `--camera-image-topic`.
+//! as `sensor_msgs/Image`. Enabled via `--camera-image-topic`. The
+//! camera-native `CameraFrame` path is independent of this module.
 
 use edgefirst_hal::image::{Crop, Flip, ImageProcessor, ImageProcessorTrait, Rect, Rotation};
 use edgefirst_hal::tensor::{DType, PixelFormat, TensorDyn, TensorMapTrait, TensorTrait};
@@ -138,48 +139,57 @@ impl HalImagePublisher {
         frame_id: &str,
         session: &Session,
     ) -> Result<(), Box<dyn Error>> {
-        let borrowed = src.dmabuf()?;
-        let ino = fstat(borrowed)?.st_ino;
-        let width = src.width().ok_or("tensor missing width")?;
-        let height = src.height().ok_or("tensor missing height")?;
-        let format = src.format().ok_or("tensor missing format")?;
-
-        let Self {
-            topic,
-            ring_size,
-            cdr_scratch,
-            state,
-        } = self;
-        let ready = ensure_ready(state, *ring_size, topic, visible_width, visible_height)?;
-
-        if let Entry::Vacant(slot) = ready.src_cache.entry(ino) {
-            let owned = borrowed.try_clone_to_owned()?;
-            let shape = tensor_shape_for(format, width, height)?;
-            let mut tensor = TensorDyn::from_fd(owned, &shape, DType::U8, Some("replay-jpeg-src"))?;
-            tensor.set_format(format)?;
-            if let Some(stride) = src.effective_row_stride() {
-                if stride > width {
-                    tensor.set_row_stride(stride)?;
-                }
-            }
-            debug!(
-                "hal src cache insert (tensor) ino={} {}x{} format={:?}",
-                ino, width, height, format
-            );
-            slot.insert(tensor);
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (src, visible_width, visible_height, stamp, frame_id, session);
+            return Err("hal tensor publish requires Linux dma-buf".into());
         }
+        #[cfg(target_os = "linux")]
+        {
+            let borrowed = src.dmabuf()?;
+            let ino = fstat(borrowed)?.st_ino;
+            let width = src.width().ok_or("tensor missing width")?;
+            let height = src.height().ok_or("tensor missing height")?;
+            let format = src.format().ok_or("tensor missing format")?;
 
-        let src_rect = Rect::new(0, 0, visible_width as usize, visible_height as usize);
-        convert_and_publish(
-            ready,
-            ino,
-            Some(src_rect),
-            stamp,
-            frame_id,
-            topic,
-            session,
-            cdr_scratch,
-        )
+            let Self {
+                topic,
+                ring_size,
+                cdr_scratch,
+                state,
+            } = self;
+            let ready = ensure_ready(state, *ring_size, topic, visible_width, visible_height)?;
+
+            if let Entry::Vacant(slot) = ready.src_cache.entry(ino) {
+                let owned = borrowed.try_clone_to_owned()?;
+                let shape = tensor_shape_for(format, width, height)?;
+                let mut tensor =
+                    TensorDyn::from_fd(owned, &shape, DType::U8, Some("replay-jpeg-src"))?;
+                tensor.set_format(format)?;
+                if let Some(stride) = src.effective_row_stride() {
+                    if stride > width {
+                        tensor.set_row_stride(stride)?;
+                    }
+                }
+                debug!(
+                    "hal src cache insert (tensor) ino={} {}x{} format={:?}",
+                    ino, width, height, format
+                );
+                slot.insert(tensor);
+            }
+
+            let src_rect = Rect::new(0, 0, visible_width as usize, visible_height as usize);
+            convert_and_publish(
+                ready,
+                ino,
+                Some(src_rect),
+                stamp,
+                frame_id,
+                topic,
+                session,
+                cdr_scratch,
+            )
+        }
     }
 }
 

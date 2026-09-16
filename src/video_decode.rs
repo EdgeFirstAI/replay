@@ -4,7 +4,8 @@
 //! H.264 (VPU) and JPEG (hal codec) decoders for the replay pipeline.
 //!
 //! H.264 frames are surfaced directly as `videostream::Frame` — the caller
-//! publishes the decoder-native NV12 buffer to `rt/camera/dma` and optionally
+//! publishes the decoder-native NV12 buffer as `CameraFrame` on
+//! `rt/camera/frame` and optionally
 //! converts to RGBA via the hal `ImageProcessor` for `rt/camera/image`.
 //!
 //! JPEG frames are decoded by `edgefirst_codec::ImageDecoder` directly into
