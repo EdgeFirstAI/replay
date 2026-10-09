@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `CameraFrame` tensor `storage_kind` and `dtype` are taken from the HAL vocabulary (`TensorMemory::DmaBuf.code()`, `DType::U8.code()`) instead of literal numbers, and `format` is the HAL wire name from `PixelFormat::as_str()`. The values on the wire are unchanged (`2`, `0`, `"NV12"`/`"YUYV"`) (EDGEAI-2196).
+- Added a direct dependency on `edgefirst-tensor` 0.34.1 (`static` feature only) for the shared tensor vocabulary (EDGEAI-2196).
+
 ## [3.0.0] - 2026-09-15
 
 ### Changed
