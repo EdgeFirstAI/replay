@@ -24,7 +24,7 @@ data through Zenoh messaging for development, testing, and demonstration.
 - Linux (aarch64 or x86_64)
 - G2D library (libg2d.so.2) for hardware-accelerated graphics
 - DMA-Heap support for buffer allocation
-- Rust 1.70 or later (for building from source)
+- Rust 1.94 or later (for building from source)
 
 ## Installation
 
