@@ -17,6 +17,7 @@ use edgefirst_schemas::{
     foxglove_msgs::FoxgloveCompressedVideo,
     sensor_msgs::CompressedImage,
 };
+use edgefirst_tensor::{DType, PixelFormat, PixelLayout, TensorMemory};
 use image_publish::HalImagePublisher;
 use log::{debug, error, info, warn};
 use mcap::Message;
@@ -50,13 +51,10 @@ use zenoh::{
 
 const SCHEMA_DMA_BUFFER: &str = "edgefirst_msgs/msg/DmaBuffer";
 const SCHEMA_CAMERA_FRAME: &str = "edgefirst_msgs/msg/CameraFrame";
-#[cfg(target_os = "linux")]
-const NV12_FOURCC: u32 = u32::from_le_bytes(*b"NV12");
-/// HAL Modular Tensor ABI codes carried (not interpreted) by schemas 4.0.
-/// `storage_kind = 2` is `EfStorageKind::DmaBuf`; `dtype = 0` is `EfDtype::U8`
-/// (`I8` is 1). See `edgefirst-tensor-abi`.
-const TENSOR_STORAGE_KIND_DMA_BUF: u32 = 2;
-const TENSOR_DTYPE_U8: u32 = 0;
+/// HAL tensor-ABI codes carried (not interpreted) by schemas 4.0, taken
+/// from the HAL vocabulary rather than written out.
+const TENSOR_STORAGE_KIND_DMA_BUF: u32 = TensorMemory::DmaBuf.code();
+const TENSOR_DTYPE_U8: u32 = DType::U8.code();
 
 fn map_mcap<P: AsRef<Path>>(p: P) -> Result<Mmap, String> {
     let fd = match fs::File::open(p.as_ref()) {
@@ -515,11 +513,16 @@ fn publish_frame_camera(
     let height = frame.height()? as u32;
     let stride = frame.stride()? as u32;
     let fourcc = frame.fourcc()?;
-    let length = dma_buffer_length(fourcc, stride, height)?;
-    let format = fourcc_str(fourcc);
+    let format = PixelFormat::from_fourcc(fourcc).ok_or_else(|| {
+        format!(
+            "unsupported decoder fourcc {:?}",
+            String::from_utf8_lossy(&fourcc.to_le_bytes())
+        )
+    })?;
+    let length = dma_buffer_length(format, stride, height)?;
 
     publish_camera_frame(
-        stamp, frame_id, pid, fd, width, height, stride, &format, length, seq, cdr, topic, session,
+        stamp, frame_id, pid, fd, width, height, stride, format, length, seq, cdr, topic, session,
     )
 }
 
@@ -549,10 +552,21 @@ fn publish_tensor_camera(
             .effective_row_stride()
             .map(|s| s as u32)
             .unwrap_or(width);
-        let length = dma_buffer_length(NV12_FOURCC, stride, height)?;
+        let length = dma_buffer_length(PixelFormat::Nv12, stride, height)?;
 
         publish_camera_frame(
-            stamp, frame_id, pid, fd, width, height, stride, "NV12", length, seq, cdr, topic,
+            stamp,
+            frame_id,
+            pid,
+            fd,
+            width,
+            height,
+            stride,
+            PixelFormat::Nv12,
+            length,
+            seq,
+            cdr,
+            topic,
             session,
         )
     }
@@ -561,19 +575,19 @@ fn publish_tensor_camera(
 /// Total dma-buf byte length for a decoder-/camera-native frame layout.
 ///
 /// `stride` is the row stride in bytes for the primary (luma) plane.
-/// Returns an error for fourcc values the camera contract doesn't define.
-fn dma_buffer_length(fourcc: u32, stride: u32, height: u32) -> Result<u32, Box<dyn Error>> {
+/// Returns an error for formats the camera contract doesn't define.
+fn dma_buffer_length(format: PixelFormat, stride: u32, height: u32) -> Result<u32, Box<dyn Error>> {
     let stride = stride as u64;
     let height = height as u64;
-    let bytes: u64 = match &fourcc.to_le_bytes() {
+    let bytes: u64 = match format {
         // NV12: stride*height (Y plane) + stride*height/2 (interleaved UV).
-        b"NV12" => stride * height * 3 / 2,
+        PixelFormat::Nv12 => stride * height * 3 / 2,
         // YUYV: packed 4:2:2, 2 bytes per pixel — stride already accounts.
-        b"YUYV" => stride * height,
+        PixelFormat::Yuyv => stride * height,
         other => {
             return Err(format!(
-                "unsupported camera fourcc {:?} for length computation",
-                String::from_utf8_lossy(other)
+                "unsupported camera format {:?} for length computation",
+                other.as_str()
             )
             .into())
         }
@@ -581,28 +595,21 @@ fn dma_buffer_length(fourcc: u32, stride: u32, height: u32) -> Result<u32, Box<d
     Ok(bytes as u32)
 }
 
-fn fourcc_str(fourcc: u32) -> String {
-    String::from_utf8_lossy(&fourcc.to_le_bytes())
-        .trim_end_matches('\0')
-        .to_string()
-}
-
 /// Bytes per addressing-grid sample along the width axis.
 ///
 /// Tensor `shape` is `[height, width]`, not the byte layout. Packed YUYV
-/// stores two bytes per pixel; NV12 luma is one. Matches camera's
-/// `pixel_stride_bytes`.
-fn pixel_stride_bytes(format: &str) -> i64 {
-    match format {
-        "YUYV" | "UYVY" | "YVYU" | "VYUY" => 2,
-        "RGB3" | "BGR3" => 3,
-        "RGBA" | "RGBX" | "BGRA" | "BGRX" | "ARGB" | "ABGR" => 4,
+/// stores two bytes per pixel; NV12 luma is one; packed RGB variants follow
+/// their channel count.
+fn pixel_stride_bytes(format: PixelFormat) -> i64 {
+    match format.layout() {
+        PixelLayout::Packed => format.channels() as i64,
         _ => 1,
     }
 }
 
 /// Encode and publish a CameraFrame matching the live camera 4.x wire contract:
-/// single-plane contiguous DMA-BUF, `dtype = 0` (U8), empty colorimetry.
+/// single-plane contiguous DMA-BUF, U8 dtype, HAL wire format name, empty
+/// colorimetry.
 #[allow(clippy::too_many_arguments)]
 fn publish_camera_frame(
     stamp: Time,
@@ -612,7 +619,7 @@ fn publish_camera_frame(
     width: u32,
     height: u32,
     stride: u32,
-    format: &str,
+    format: PixelFormat,
     length: u32,
     seq: &mut u64,
     cdr: &mut Vec<u8>,
@@ -631,7 +638,8 @@ fn publish_camera_frame(
         .map_err(|e| format!("zenoh put on {topic} failed: {e:?}"))?;
     debug!(
         "Sent CameraFrame on {topic} seq={seq} fd={fd} {width}x{height} \
-         stride={stride} format={format} length={length}"
+         stride={stride} format={} length={length}",
+        format.as_str()
     );
     Ok(())
 }
@@ -644,7 +652,7 @@ fn encode_camera_frame(
     pid: u32,
     width: u32,
     height: u32,
-    format: &str,
+    format: PixelFormat,
     plane_fd: i32,
     plane_stride: u32,
     plane_len: u32,
@@ -672,7 +680,7 @@ fn encode_camera_frame(
         strides: &strides,
         quant_scales: &[],
         quant_zero_points: &[],
-        format: format.into(),
+        format: format.as_str().into(),
         color_space: "".into(),
         color_transfer: "".into(),
         color_encoding: "".into(),
@@ -694,9 +702,38 @@ mod tests {
 
     #[test]
     fn pixel_stride_bytes_matches_camera() {
-        assert_eq!(pixel_stride_bytes("NV12"), 1);
-        assert_eq!(pixel_stride_bytes("YUYV"), 2);
-        assert_eq!(pixel_stride_bytes("RGBA"), 4);
+        assert_eq!(pixel_stride_bytes(PixelFormat::Nv12), 1);
+        assert_eq!(pixel_stride_bytes(PixelFormat::Yuyv), 2);
+        assert_eq!(pixel_stride_bytes(PixelFormat::Rgb), 3);
+        assert_eq!(pixel_stride_bytes(PixelFormat::Rgba), 4);
+        assert_eq!(pixel_stride_bytes(PixelFormat::Grey), 1);
+    }
+
+    #[test]
+    fn tensor_codes_match_hal_vocabulary() {
+        assert_eq!(
+            TENSOR_STORAGE_KIND_DMA_BUF,
+            TensorMemory::from_str_code("dmabuf")
+                .map(TensorMemory::code)
+                .unwrap()
+        );
+        assert_eq!(
+            TENSOR_DTYPE_U8,
+            DType::from_str_code("u8").map(DType::code).unwrap()
+        );
+    }
+
+    #[test]
+    fn dma_buffer_length_follows_format() {
+        assert_eq!(
+            dma_buffer_length(PixelFormat::Nv12, 1920, 1080).unwrap(),
+            1920 * 1080 * 3 / 2
+        );
+        assert_eq!(
+            dma_buffer_length(PixelFormat::Yuyv, 3840, 1080).unwrap(),
+            3840 * 1080
+        );
+        assert!(dma_buffer_length(PixelFormat::Rgba, 7680, 1080).is_err());
     }
 
     #[test]
@@ -709,7 +746,7 @@ mod tests {
             1000,
             1920,
             1080,
-            "NV12",
+            PixelFormat::Nv12,
             7,
             1920,
             1920 * 1080 * 3 / 2,
@@ -724,11 +761,14 @@ mod tests {
 
         let t = cf.tensor();
         assert_eq!(t.storage_kind(), TENSOR_STORAGE_KIND_DMA_BUF);
-        // Literal HAL ABI value: EfDtype::U8 = 0 (I8 = 1).
-        assert_eq!(t.dtype(), 0);
+        assert_eq!(t.dtype(), TENSOR_DTYPE_U8);
         assert_eq!(t.pid(), 1000);
         assert_eq!(t.fence_fd(), -1);
-        assert_eq!(t.format(), "NV12");
+        assert_eq!(t.format(), PixelFormat::Nv12.as_str());
+        assert_eq!(
+            PixelFormat::from_str_code(t.format()),
+            Some(PixelFormat::Nv12)
+        );
         assert_eq!(t.shape().collect::<Vec<_>>(), vec![1080, 1920]);
         assert_eq!(t.strides().collect::<Vec<_>>(), vec![1920, 1]);
         assert_eq!(t.num_planes(), 1);

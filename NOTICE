@@ -29,6 +29,10 @@ Third-party dependencies (first-level only):
   EdgeFirst message schemas
   https://github.com/EdgeFirstAI/edgefirst-schemas
 
+- edgefirst-tensor 0.34.1 (Apache-2.0)
+  EdgeFirst HAL tensor vocabulary (dtype, memory and pixel format codes)
+  https://github.com/EdgeFirstAI/hal
+
 - libc 0.2 (MIT/Apache-2.0)
   Raw FFI bindings to platform APIs
   https://github.com/rust-lang/libc

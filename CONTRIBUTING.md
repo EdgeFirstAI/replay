@@ -29,7 +29,7 @@ Before contributing:
 
 ### Prerequisites
 
-- **Rust**: 1.70 or later
+- **Rust**: 1.94 or later
 - **Git**: For version control
 - **Cross-compilation tools** (optional): `gcc-aarch64-linux-gnu` for ARM64 builds
 

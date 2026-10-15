@@ -6,6 +6,7 @@ repository = "https://github.com/EdgeFirstAI/replay"
 homepage = "https://github.com/EdgeFirstAI/replay"
 version = "3.0.0"
 edition = "2021"
+rust-version = "1.94"
 
 [profile.release]
 opt-level = 3
@@ -34,6 +35,7 @@ ctrlc = "3.4.7"
 edgefirst-codec = "0.23.1"
 edgefirst-hal = "0.23.1"
 edgefirst-schemas = "4.0"
+edgefirst-tensor = { version = "0.34.1", default-features = false, features = ["static"] }
 log = { version = "0.4.27", features = ["release_max_level_debug"] }
 mcap = "0.18.0"
 memmap2 = "0.9.5"
